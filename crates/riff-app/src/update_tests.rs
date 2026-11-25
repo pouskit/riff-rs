@@ -5,6 +5,7 @@ use crate::audio_prefs::{AudioMessage, SleepChoice, SleepTimer};
 use crate::i18n::I18n;
 use crate::library::FAVORITES_SCOPE;
 use crate::prefs::{BoolKey, SettingsMessage};
+use crate::resume::ResumePosition;
 use crate::screens::Screen;
 use crate::settings::NativeSettings;
 use crate::ui::{
@@ -520,7 +521,7 @@ fn previous_after_three_seconds_seeks_to_the_start() {
   audio(&mut app, AudioEvent::Position(Duration::from_secs(10)));
   assert_eq!(
     player(&mut app, PlayerMessage::Prev),
-    vec![Effect::AudioSeek(Duration::ZERO)]
+    vec![Effect::AudioSeek(Duration::ZERO),]
   );
   assert_eq!(current_id(&app), "b");
   let effects = player(&mut app, PlayerMessage::Prev);
@@ -563,12 +564,12 @@ fn seeking_by_keyboard_stays_inside_the_track() {
   audio(&mut app, AudioEvent::Position(Duration::from_secs(3)));
   assert_eq!(
     player(&mut app, PlayerMessage::SeekBy(-5.0)),
-    vec![Effect::AudioSeek(Duration::ZERO)]
+    vec![Effect::AudioSeek(Duration::ZERO),]
   );
   audio(&mut app, AudioEvent::Position(Duration::from_secs(198)));
   assert_eq!(
     player(&mut app, PlayerMessage::SeekBy(5.0)),
-    vec![Effect::AudioSeek(Duration::from_secs(200))]
+    vec![Effect::AudioSeek(Duration::from_secs(200)),]
   );
 }
 
@@ -2817,7 +2818,10 @@ fn the_list_shuffle_button_updates_the_player_only_for_the_playing_list() {
   ui(&mut app, UiMessage::PlaylistPlay);
   assert!(!app.player.shuffle);
   let effects = ui(&mut app, UiMessage::ListShuffleToggle);
-  assert!(matches!(effects.as_slice(), [Effect::ScheduleSave(_)]));
+  assert!(matches!(
+    effects.as_slice(),
+    [Effect::ScheduleSave(_), Effect::SaveResume(_)]
+  ));
   assert!(app.player.shuffle);
   let second = app.data.create_playlist("Q", tracks(&["u"]), 2, 2).unwrap();
   ui(&mut app, UiMessage::OpenPlaylist(second));
@@ -3640,7 +3644,16 @@ fn the_end_of_a_trim_loops_back_to_its_start_in_repeat_mode() {
   let before = audio(&mut app, AudioEvent::Position(Duration::from_secs(99)));
   assert!(!before.contains(&Effect::AudioSeek(Duration::from_secs(5))));
   let effects = audio(&mut app, AudioEvent::Position(Duration::from_secs(100)));
-  assert_eq!(effects, vec![Effect::AudioSeek(Duration::from_secs(5))]);
+  assert_eq!(
+    effects,
+    vec![
+      Effect::AudioSeek(Duration::from_secs(5)),
+      Effect::SaveResumePosition(ResumePosition::new(
+        "ytmusic:a".into(),
+        Duration::from_secs(5)
+      )),
+    ]
+  );
   assert_eq!(current_id(&app), "a");
 }
 
@@ -4333,4 +4346,117 @@ fn a_successful_search_puts_the_first_cover_in_the_search_field() {
     app.ui.search.icon_cover, None,
     "aucun résultat : retour à la loupe"
   );
+}
+
+fn playing_app() -> App {
+  let mut app = app();
+  ui(&mut app, UiMessage::RowActivated(ListId::Favorites, 0));
+  assert_eq!(current_id(&app), "a");
+  app
+}
+
+#[test]
+fn disliking_the_current_track_blocks_it_and_skips_to_the_next() {
+  let mut app = playing_app();
+  let effects = ui(
+    &mut app,
+    UiMessage::CurrentCommand(TrackCommand::BlockTrack),
+  );
+  assert!(app.data.is_track_blocked(&track("a")));
+  assert_eq!(current_id(&app), "b");
+  assert!(resolved(&effects).is_some());
+  let toasts = effects
+    .iter()
+    .filter(|effect| matches!(effect, Effect::Toast(..)))
+    .count();
+  assert_eq!(toasts, 1);
+}
+
+#[test]
+fn blocking_from_the_context_menu_of_the_current_track_skips_too() {
+  let mut app = playing_app();
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("a")), TrackCommand::BlockTrack),
+  );
+  assert_eq!(current_id(&app), "b");
+}
+
+#[test]
+fn unblocking_or_blocking_another_track_does_not_skip() {
+  let mut app = playing_app();
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("c")), TrackCommand::BlockTrack),
+  );
+  assert_eq!(current_id(&app), "a", "autre titre");
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("c")), TrackCommand::BlockTrack),
+  );
+  assert!(!app.data.is_track_blocked(&track("c")));
+  assert_eq!(current_id(&app), "a", "déblocage");
+}
+
+#[test]
+fn unblocking_the_current_track_does_not_skip() {
+  let mut app = playing_app();
+  app.data.toggle_block_track(&track("a"));
+  ui(
+    &mut app,
+    UiMessage::CurrentCommand(TrackCommand::BlockTrack),
+  );
+  assert!(!app.data.is_track_blocked(&track("a")));
+  assert_eq!(current_id(&app), "a");
+}
+
+#[test]
+fn disliking_the_only_track_without_autoplay_pauses() {
+  let data = UserData {
+    favorites: tracks(&["a"]),
+    autoplay: false,
+    ..UserData::default()
+  };
+  let mut app = app_with(data);
+  ui(&mut app, UiMessage::RowActivated(ListId::Favorites, 0));
+  app.playback.is_playing = true;
+  let effects = ui(
+    &mut app,
+    UiMessage::CurrentCommand(TrackCommand::BlockTrack),
+  );
+  assert!(effects.contains(&Effect::AudioPause));
+  assert!(!app.playback.is_playing);
+}
+
+#[test]
+fn blocking_removes_every_favorite_the_entry_matches() {
+  let mut data = UserData {
+    favorites: tracks(&["a"]),
+    ..UserData::default()
+  };
+  let mut twin = track("a2");
+  twin.title = track("a").title;
+  twin.artist = track("a").artist;
+  data.favorites.push(twin.clone());
+  data.toggle_block_track(&track("a"));
+  assert!(data.favorites.is_empty());
+  data.toggle_favorite(&twin, 0);
+  assert!(!data.is_track_blocked(&track("a")));
+}
+
+#[test]
+fn blocking_removes_the_track_from_the_favorites_and_liking_unblocks_it() {
+  let mut app = playing_app();
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("c")), TrackCommand::BlockTrack),
+  );
+  assert!(!app.data.is_favorite(&track("c")));
+  assert!(app.data.is_track_blocked(&track("c")));
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("c")), TrackCommand::ToggleFavorite),
+  );
+  assert!(app.data.is_favorite(&track("c")));
+  assert!(!app.data.is_track_blocked(&track("c")));
 }

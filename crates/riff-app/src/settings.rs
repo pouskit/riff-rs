@@ -119,6 +119,8 @@ pub struct NativeSettings {
   pub lastfm_user: String,
   /// Fermer la fenêtre la garde dans la zone de notification (`riff_tray_on_close`, vrai hors Linux).
   pub tray_on_close: bool,
+  /// Fenêtre principale au premier plan, bascule du menu de la zone de notification (`riff_main_always_on_top`, faux par défaut).
+  pub main_always_on_top: bool,
   /// Session média du système : touches média et superposition.
   pub media_session: bool,
   /// Présence Discord (`devsize_discord_rpc`).
@@ -193,6 +195,7 @@ impl Default for NativeSettings {
       lastfm_enabled: true,
       lastfm_user: String::new(),
       tray_on_close: !cfg!(target_os = "linux"),
+      main_always_on_top: false,
       media_session: true,
       discord_rpc: true,
       discord_artist_status: true,
@@ -304,6 +307,7 @@ impl NativeSettings {
       tray_on_close: storage
         .text("riff_tray_on_close")
         .map_or(defaults.tray_on_close, |value| value == "true"),
+      main_always_on_top: storage.text("riff_main_always_on_top") == Some("true"),
       media_session: storage
         .text("riff_win_global_media_keys")
         .map_or(defaults.media_session, |value| value == "true"),
@@ -447,6 +451,7 @@ impl NativeSettings {
     put("riff_lastfm_enabled", word(self.lastfm_enabled));
     put("riff_lastfm_user", self.lastfm_user.clone());
     put("riff_tray_on_close", word(self.tray_on_close));
+    put("riff_main_always_on_top", word(self.main_always_on_top));
     put("riff_win_global_media_keys", word(self.media_session));
     put("devsize_discord_rpc", word(self.discord_rpc));
     put(
@@ -1073,6 +1078,22 @@ mod tests {
       from(r#"{ "riff_ui_lang": "uk" }"#).tray_on_close,
       NativeSettings::default().tray_on_close
     );
+  }
+
+  #[test]
+  fn the_main_always_on_top_setting_is_off_by_default_and_survives_a_round_trip() {
+    assert!(!NativeSettings::default().main_always_on_top);
+    let from = |content: &str| NativeSettings::imported_from(&storage_with(content).1);
+    assert!(from(r#"{ "riff_main_always_on_top": "true" }"#).main_always_on_top);
+    assert!(!from(r#"{ "riff_main_always_on_top": "false" }"#).main_always_on_top);
+    assert!(!from(r#"{ "riff_ui_lang": "uk" }"#).main_always_on_top);
+    let settings = NativeSettings {
+      main_always_on_top: true,
+      ..NativeSettings::default()
+    };
+    let read =
+      NativeSettings::imported_from(&LegacyStorage::from_entries(&settings.to_legacy_entries()));
+    assert!(read.main_always_on_top);
   }
 
   #[test]

@@ -384,7 +384,7 @@ impl UserData {
       .any(|favorite| favorite.is_same(track, &self.platform))
   }
 
-  /// `toggleFavoriteTrack`. Renvoie `true` si le titre rejoint les favoris.
+  /// `toggleFavoriteTrack`. Renvoie `true` si le titre rejoint les favoris (et sort des titres bloqués).
   pub fn toggle_favorite(&mut self, track: &Track, now_ms: i64) -> bool {
     if self.is_favorite(track) {
       let platform = self.platform.clone();
@@ -393,6 +393,7 @@ impl UserData {
         .retain(|favorite| !favorite.is_same(track, &platform));
       false
     } else {
+      self.unblock_track(track);
       self.favorites.insert(
         0,
         Track {
@@ -404,11 +405,12 @@ impl UserData {
     }
   }
 
-  /// Ajoute ceux qui manquent (sélection). Renvoie le nombre ajouté.
+  /// Ajoute ceux qui manquent (sélection). Renvoie le nombre ajouté. Un titre aimé n'est plus bloqué.
   pub fn add_favorites(&mut self, tracks: &[Track], now_ms: i64) -> usize {
     let mut added = 0;
     for track in tracks {
       if !self.is_favorite(track) {
+        self.unblock_track(track);
         self.favorites.insert(
           0,
           Track {
@@ -539,7 +541,7 @@ impl UserData {
         .is_some_and(|artist| self.is_artist_blocked(artist))
   }
 
-  /// `toggleBlockTrack`. Renvoie `true` si le titre est désormais bloqué.
+  /// `toggleBlockTrack`. Renvoie `true` si le titre est désormais bloqué (et sorti des favoris).
   pub fn toggle_block_track(&mut self, track: &Track) -> bool {
     if let Some(index) = self.blocked_entry(track) {
       self.blocked_tracks.remove(index);
@@ -552,7 +554,20 @@ impl UserData {
       artist: track.artist.clone(),
       ..BlockedTrack::default()
     });
+    // Après l'insertion : retire aussi les favoris que l'entrée couvre (autre id, même artiste-titre).
+    let blocked = std::mem::take(&mut self.favorites);
+    self.favorites = blocked
+      .into_iter()
+      .filter(|favorite| !self.is_track_blocked(favorite))
+      .collect();
     true
+  }
+
+  /// Retire le blocage direct du titre (pas celui de son artiste).
+  pub(crate) fn unblock_track(&mut self, track: &Track) {
+    while let Some(index) = self.blocked_entry(track) {
+      self.blocked_tracks.remove(index);
+    }
   }
 
   /// `toggleBlockArtist`. Renvoie `true` si l'artiste est désormais bloqué.
@@ -1700,6 +1715,21 @@ mod tests {
     let mut fresh = original;
     data.apply_rename(&mut fresh);
     assert_eq!(fresh.title.as_deref(), Some("New"));
+  }
+
+  #[test]
+  fn blocking_and_liking_a_track_exclude_each_other() {
+    let mut data = data();
+    let song = track("a", "Artist", "Song");
+    data.favorites.push(song.clone());
+    assert!(data.toggle_block_track(&song));
+    assert!(!data.is_favorite(&song));
+    assert!(data.toggle_favorite(&song, NOW));
+    assert!(data.is_favorite(&song));
+    assert!(!data.is_track_blocked(&song));
+    assert!(data.toggle_block_track(&song));
+    assert_eq!(data.add_favorites(std::slice::from_ref(&song), NOW), 1);
+    assert!(!data.is_track_blocked(&song));
   }
 
   #[test]

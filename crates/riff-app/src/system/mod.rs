@@ -1,5 +1,6 @@
 //! Intégration système : canal local, zone de notification, touches média, raccourcis globaux.
 
+pub mod autostart;
 pub mod bridge;
 pub mod channel;
 pub mod cli;
@@ -46,6 +47,12 @@ pub enum SystemEvent {
   Command(Command),
   /// Menu de la zone de notification : afficher ou masquer la fenêtre.
   ToggleWindow,
+  /// Menu de la zone de notification : bascule « Always on top » de la fenêtre principale.
+  ToggleAlwaysOnTop,
+  /// Menu de la zone de notification : bascule « Start with Windows ».
+  ToggleAutostart,
+  /// L'icône de la zone de notification n'a pas pu être créée : une fenêtre cachée doit réapparaître.
+  TrayUnavailable,
   /// Menu de la zone de notification : quitter.
   Quit,
 }

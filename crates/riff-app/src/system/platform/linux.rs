@@ -57,9 +57,17 @@ fn run(
   if let Some(manager) = &manager {
     register_hotkeys(manager, report);
   }
-  let tray = Tray::create(&init.labels, events.clone())
-    .inspect_err(|error| tracing::warn!(%error, "zone de notification indisponible"))
-    .ok();
+  let tray = Tray::create(
+    &init.labels,
+    init.always_on_top,
+    init.autostart,
+    events.clone(),
+  )
+  .inspect_err(|error| {
+    tracing::warn!(%error, "zone de notification indisponible");
+    let _ = events.send(SystemEvent::TrayUnavailable);
+  })
+  .ok();
   report
     .tray_active
     .store(tray.is_some(), std::sync::atomic::Ordering::Relaxed);
@@ -74,6 +82,16 @@ fn run(
       HostRequest::Labels(labels) => {
         if let Some(tray) = &tray {
           tray.set_labels(&labels);
+        }
+      }
+      HostRequest::AlwaysOnTop(on) => {
+        if let Some(tray) = &tray {
+          tray.set_always_on_top(on);
+        }
+      }
+      HostRequest::Autostart(state) => {
+        if let Some(tray) = &tray {
+          tray.set_autostart(state);
         }
       }
       HostRequest::Resume => {

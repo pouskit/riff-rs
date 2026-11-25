@@ -2,6 +2,7 @@
 //! à l'écart de la boucle d'`iced`. Les événements remontent par `SystemEvent`, les demandes descendent par `HostRequest`.
 
 use super::SystemEvent;
+use super::autostart;
 use super::now_playing::NowPlaying;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
@@ -14,6 +15,8 @@ use tokio::sync::mpsc::UnboundedSender;
 pub struct TrayLabels {
   pub show_hide: String,
   pub play_pause: String,
+  pub always_on_top: String,
+  pub start_with_windows: String,
   pub quit: String,
 }
 
@@ -22,6 +25,8 @@ impl Default for TrayLabels {
     Self {
       show_hide: "Show/Hide".into(),
       play_pause: "Play/Pause".into(),
+      always_on_top: "Always on top".into(),
+      start_with_windows: "Start with Windows".into(),
       quit: "Quit".into(),
     }
   }
@@ -32,6 +37,10 @@ impl Default for TrayLabels {
 pub struct HostInit {
   pub labels: TrayLabels,
   pub media_session: bool,
+  /// État initial de la case « Always on top » du menu.
+  pub always_on_top: bool,
+  /// État initial de l'entrée « Start with Windows » du menu.
+  pub autostart: autostart::State,
 }
 
 /// Demande de l'application au fil système.
@@ -44,6 +53,10 @@ pub enum HostRequest {
     hwnd: Option<isize>,
   },
   Labels(TrayLabels),
+  /// Coche ou décoche l'entrée « Always on top » du menu pour suivre le réglage.
+  AlwaysOnTop(bool),
+  /// Coche ou grise l'entrée « Start with Windows » d'après le registre.
+  Autostart(autostart::State),
   /// Ré-enregistre raccourcis et session (retour de veille ou déverrouillage).
   Resume,
   Quit,
@@ -166,7 +179,7 @@ impl Core {
       }
       HostRequest::Resume => self.recreate_session(),
       HostRequest::Quit => return false,
-      HostRequest::Labels(_) => {}
+      HostRequest::Labels(_) | HostRequest::AlwaysOnTop(_) | HostRequest::Autostart(_) => {}
     }
     true
   }

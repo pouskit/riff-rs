@@ -22,6 +22,8 @@ pub const RIFF_DATA_ENTRIES: &[&str] = &[
   "startup.json",
   "user-data.json",
   "native-settings.json",
+  "playback-state.json",
+  "playback-position.json",
   "yt-cookies.txt",
   "google-oauth.enc",
   "spotify-auth.enc",

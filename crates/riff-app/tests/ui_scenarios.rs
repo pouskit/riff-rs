@@ -373,7 +373,7 @@ fn playing_a_queue_walks_through_resolution_loading_progress_and_the_end_of_each
   ))));
   assert_eq!(
     app.update(Message::Player(PlayerMessage::Prev)),
-    vec![Effect::AudioSeek(Duration::ZERO)]
+    vec![Effect::AudioSeek(Duration::ZERO),]
   );
   assert_eq!(current_id(&app), "a");
 
@@ -514,6 +514,7 @@ fn enabling_a_plugin_then_playing_notifying_and_disabling_it() {
   let queue = tracks(&["a", "b", "c", "d"]);
   app.player.play_list(queue[0].clone(), queue, 0, "ytmusic");
   app.player.shuffle = true;
+  app.mark_resume_saved();
 
   // Sans plugin actif, aucun événement n'est construit.
   assert!(app.plugin_events().is_empty());

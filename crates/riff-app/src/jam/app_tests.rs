@@ -769,3 +769,179 @@ fn starting_a_jam_freezes_the_platform_of_the_host_queue() {
     Some("ytmusic")
   );
 }
+
+#[test]
+fn a_blocked_track_is_played_in_a_jam_and_stays_blocked() {
+  let (mut app, _) = host();
+  app.data.toggle_block_track(&track("b"));
+  let from = uid_of(&app, "a");
+  guest_op(&mut app, Op::Next { from: Some(from) });
+  assert_eq!(current_id(&app), "b");
+  assert!(app.data.is_track_blocked(&track("b")));
+  let effects = player(&mut app, PlayerMessage::Next);
+  assert!(!effects.is_empty());
+  assert_eq!(current_id(&app), "c");
+}
+
+#[test]
+fn a_blocked_track_can_be_added_to_the_jam_queue_and_stays_blocked() {
+  let (mut app, _) = host();
+  app.data.toggle_block_track(&track("x"));
+  guest_op(
+    &mut app,
+    Op::Add {
+      tracks: vec![wire("x", "ytmusic")],
+      next: false,
+    },
+  );
+  assert_eq!(queue_ids(&app), ["a", "b", "c", "x"]);
+  assert!(app.data.is_track_blocked(&track("x")));
+}
+
+#[test]
+fn disliking_the_current_track_in_a_jam_blocks_without_skipping() {
+  let (mut app, _) = host();
+  app.update(Message::Ui(UiMessage::CurrentCommand(
+    TrackCommand::BlockTrack,
+  )));
+  assert!(app.data.is_track_blocked(&track("a")));
+  assert_eq!(current_id(&app), "a");
+}
+
+#[test]
+fn after_the_jam_the_blocked_tracks_are_skipped_again() {
+  let (mut app, _) = host();
+  app.data.toggle_block_track(&track("b"));
+  let from = uid_of(&app, "a");
+  guest_op(&mut app, Op::Next { from: Some(from) });
+  assert_eq!(current_id(&app), "b");
+  loaded(&mut app);
+  assert!(app.playback.is_playing);
+  event(&mut app, JamEvent::Ended(EndCause::Stopped));
+  assert!(app.jam.is_none());
+  assert_eq!(current_id(&app), "c", "le titre bloqué joué cède la place");
+  assert!(app.data.is_track_blocked(&track("b")));
+  app.player.play_at(0);
+  player(&mut app, PlayerMessage::Next);
+  assert_eq!(current_id(&app), "c", "Next saute le bloqué");
+}
+
+#[test]
+fn leaving_the_jam_paused_on_a_blocked_track_does_nothing() {
+  let (mut app, _) = host();
+  app.data.toggle_block_track(&track("b"));
+  let from = uid_of(&app, "a");
+  guest_op(&mut app, Op::Next { from: Some(from) });
+  guest_op(&mut app, Op::Pause);
+  assert!(!app.playback.is_playing);
+  event(&mut app, JamEvent::Ended(EndCause::Stopped));
+  assert_eq!(current_id(&app), "b");
+}
+
+#[test]
+fn a_plugin_pick_of_a_blocked_track_is_played_in_a_jam() {
+  let (mut app, _) = host();
+  app.data.toggle_block_track(&track("b"));
+  app.player.shuffle = true;
+  app.plugins.active = true;
+  app.plugins.picks = true;
+  let effects = player(&mut app, PlayerMessage::Next);
+  let Some(Effect::PluginPick { id, .. }) = effects
+    .iter()
+    .find(|effect| matches!(effect, Effect::PluginPick { .. }))
+  else {
+    panic!("attendu : tirage du plugin");
+  };
+  let id = *id;
+  app.update(Message::Plugin(crate::plugins::PluginMessage::Picked(
+    id,
+    Ok(Some(
+      serde_json::json!({ "id": "b", "platform": "ytmusic" }),
+    )),
+  )));
+  assert_eq!(current_id(&app), "b");
+  assert!(app.data.is_track_blocked(&track("b")));
+}
+
+#[test]
+fn joining_and_leaving_a_jam_writes_no_resume_state() {
+  let before = vec![track("x"), track("y")];
+  let mut app = base_app(before);
+  app.update(Message::Ui(UiMessage::RowActivated(ListId::Favorites, 1)));
+  let saved = |effects: &[Effect]| {
+    effects.iter().any(|effect| {
+      matches!(
+        effect,
+        Effect::SaveResume(_) | Effect::SaveResumePosition(_)
+      )
+    })
+  };
+  let mut all = jam(&mut app, JamMessage::CodeInput("riffjam-test".to_string()));
+  all.extend(jam(&mut app, JamMessage::Join));
+  all.extend(event(
+    &mut app,
+    JamEvent::Joined {
+      you: 1,
+      participants: participants(),
+      queue: QueueState {
+        qv: 1,
+        entries: vec![Entry {
+          uid: 1,
+          by: 0,
+          by_name: "User".to_string(),
+          track: wire("a", "ytmusic"),
+        }],
+      },
+      playback: playback_state(&AB[..1], 0, 1, 1, 0, true),
+      anchor: Instant::now(),
+    },
+  ));
+  all.extend(loaded(&mut app));
+  all.extend(event(&mut app, JamEvent::Ended(EndCause::HostEnded)));
+  assert!(!saved(&all), "{all:?}");
+  // La file personnelle est revenue : le fichier de file est déjà à jour.
+  let later = audio(&mut app, AudioEvent::Position(Duration::from_secs(30)));
+  assert!(
+    !later
+      .iter()
+      .any(|effect| matches!(effect, Effect::SaveResume(_)))
+  );
+}
+
+#[test]
+fn a_blocked_track_played_in_a_jam_is_never_saved_for_resume() {
+  let (mut app, _) = host();
+  app.data.toggle_block_track(&track("b"));
+  let from = uid_of(&app, "a");
+  let mut during = guest_op(&mut app, Op::Next { from: Some(from) });
+  during.extend(loaded(&mut app));
+  during.extend(audio(
+    &mut app,
+    AudioEvent::Position(Duration::from_secs(30)),
+  ));
+  assert_eq!(current_id(&app), "b");
+  assert!(
+    !during.iter().any(|effect| matches!(
+      effect,
+      Effect::SaveResume(_) | Effect::SaveResumePosition(_)
+    )),
+    "{during:?}"
+  );
+  let ended = event(&mut app, JamEvent::Ended(EndCause::Stopped));
+  assert_eq!(current_id(&app), "c");
+  let saved: Vec<_> = ended
+    .iter()
+    .filter_map(|effect| match effect {
+      Effect::SaveResume(state) => Some(state),
+      _ => None,
+    })
+    .collect();
+  assert_eq!(saved.len(), 1, "{ended:?}");
+  assert_eq!(
+    saved[0]
+      .current
+      .as_ref()
+      .and_then(|track| track.id.as_deref()),
+    Some("c")
+  );
+}

@@ -211,7 +211,11 @@ impl App {
     effects
       .into_iter()
       .filter_map(|effect| match effect {
-        Effect::SaveSettings(_) | Effect::ScheduleSave(_) | Effect::WriteUserData(_) => None,
+        Effect::SaveSettings(_)
+        | Effect::ScheduleSave(_)
+        | Effect::WriteUserData(_)
+        | Effect::SaveResume(_)
+        | Effect::SaveResumePosition(_) => None,
         Effect::SaveWindowAndExit(state, _) => Some(Effect::SaveWindowAndExit(state, None)),
         other => Some(other),
       })
@@ -220,6 +224,7 @@ impl App {
 
   /// Fin du démarrage : tout ce qui lit les réglages ou les données, ou qui peut toucher le réseau.
   fn held_startup(&mut self) -> Vec<Effect> {
+    self.resume.startup_done = true;
     let mut effects = vec![
       Effect::AudioMix(self.data.volume, self.data.muted),
       Effect::UpdateYtDlp,
@@ -231,12 +236,17 @@ impl App {
     if self.settings.ui_lang != "en" {
       effects.push(Effect::LoadLanguage(self.settings.ui_lang.clone()));
     }
+    // Après le son et le périphérique : la reprise de la lecture du lancement.
+    effects.extend(self.resume_start());
     effects
   }
 
   /// La fenêtre s'ouvre : le démarrage part, ou attend le choix de l'écran d'import.
   pub(crate) fn start_or_hold(&mut self) -> Vec<Effect> {
-    if self.import_waiting() {
+    // Déjà parti (secours de la reprise avant l'ouverture de la fenêtre) : une seule fois.
+    if self.resume.startup_done {
+      Vec::new()
+    } else if self.import_waiting() {
       self.import.startup_held = true;
       Vec::new()
     } else {
@@ -290,6 +300,7 @@ impl App {
     } else {
       Vec::new()
     };
+    effects.push(self.main_level_effect());
     let language_sent = effects
       .iter()
       .any(|effect| matches!(effect, Effect::LoadLanguage(_)));

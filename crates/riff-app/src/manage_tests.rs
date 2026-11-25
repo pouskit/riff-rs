@@ -226,6 +226,27 @@ fn an_import_into_favorites_skips_what_is_already_there() {
 }
 
 #[test]
+fn an_import_into_favorites_unblocks_the_imported_tracks() {
+  let mut app = app();
+  app.data.toggle_block_track(&crate::user_data::Track {
+    id: Some("a".to_string()),
+    ..crate::user_data::Track::default()
+  });
+  send(&mut app, ManageMessage::OpenImport(ImportKind::Link));
+  send(
+    &mut app,
+    ManageMessage::ImportTarget(FAVORITES_TARGET.to_string()),
+  );
+  reply(
+    &mut app,
+    ManageReply::Import(ImportKind::Link),
+    import_body(&["a"]),
+  );
+  assert_eq!(app.data.favorites.len(), 1);
+  assert!(app.data.blocked_tracks.is_empty());
+}
+
+#[test]
 fn an_import_into_an_existing_playlist_adds_only_new_tracks() {
   let mut app = app();
   app.data.playlists.push(Playlist {
@@ -969,6 +990,17 @@ fn the_account_export_rewrites_legacy_and_the_known_keys_win() {
   assert_eq!(other.settings.legacy["riff_font"], "mono");
   assert!(!other.settings.legacy.contains_key("riff_ui_lang"));
   assert_eq!(other.settings.ui_lang, "uk");
+}
+
+#[test]
+fn importing_an_account_reapplies_the_main_window_level() {
+  let mut app = app();
+  let effects = send(
+    &mut app,
+    ManageMessage::AccountRead(Ok(Some(json!({ "riff_main_always_on_top": "true" })))),
+  );
+  assert!(app.settings.main_always_on_top);
+  assert!(effects.contains(&Effect::MainLevel(true)));
 }
 
 #[test]

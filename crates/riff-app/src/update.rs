@@ -417,6 +417,7 @@ impl App {
     let Some(track) = self.player.current.clone() else {
       return Vec::new();
     };
+    self.resume_cancel();
     self.normalize = riff_audio::normalize::NormalizeState::default();
     self.playback = playback_reset(&self.playback);
     self.jam_on_start(crossfade.is_some());
@@ -462,7 +463,7 @@ impl App {
     effects
   }
 
-  fn resolve_effect(
+  pub(crate) fn resolve_effect(
     &self,
     track: &Track,
     start: Duration,
@@ -534,9 +535,11 @@ impl App {
       return effects;
     }
     let data = &self.data;
+    // Dans un jam, la file est commune : les titres bloqués y sont joués, sans être débloqués.
+    let in_jam = self.jam.is_some();
     let step = self.player.next(
-      &|track| data.is_blocked(track),
-      data.autoplay && self.jam.is_none(),
+      &|track| !in_jam && data.is_blocked(track),
+      data.autoplay && !in_jam,
     );
     self.apply_next(step, crossfade)
   }
@@ -660,7 +663,10 @@ impl App {
     self.ui.autoplay_waiting = false;
     if usable.is_empty() {
       let data = &self.data;
-      let step = self.player.advance(&|track| data.is_blocked(track));
+      let in_jam = self.jam.is_some();
+      let step = self
+        .player
+        .advance(&|track| !in_jam && data.is_blocked(track));
       return self.apply_next(step, None);
     }
     let step = self.player.append_autoplay(usable);
@@ -754,12 +760,15 @@ impl App {
     }
     self.ui.radio_waiting = false;
     let data = &self.data;
+    let in_jam = self.jam.is_some();
     let step = if added {
       self
         .player
-        .play_after_refill(&|track| data.is_blocked(track))
+        .play_after_refill(&|track| !in_jam && data.is_blocked(track))
     } else {
-      self.player.advance(&|track| data.is_blocked(track))
+      self
+        .player
+        .advance(&|track| !in_jam && data.is_blocked(track))
     };
     self.apply_next(step, None)
   }
@@ -843,6 +852,7 @@ impl App {
         self.player.loading = false;
         self.player.crossfade_pending = false;
         self.playback.is_playing = true;
+        self.resume_loaded();
         self.jam_on_loaded();
         let mut effects = vec![self.state_effect(true)];
         effects.extend(self.jam_guest_loaded());
@@ -1162,6 +1172,9 @@ impl App {
             if self.jam_is_guest() {
               return self.jam_resolve_failed();
             }
+            if let Some(effects) = self.resume_failed() {
+              return effects;
+            }
             let mut effects = vec![toast_effect_kind(&reason, ToastKind::Error)];
             effects.extend(self.jam_resolve_failed());
             effects
@@ -1178,6 +1191,9 @@ impl App {
       }
       PlayerMessage::AutoplayReady(found) => self.autoplay_ready(found),
       PlayerMessage::PlayMyWave => self.play_my_wave(),
+      // Secours : même démarrage que l'ouverture de la fenêtre (proxy et périphérique avant tout flux).
+      PlayerMessage::Resume => self.start_or_hold(),
+      PlayerMessage::ResumeRetry(token) => self.resume_retry(token),
     }
   }
 
@@ -1889,15 +1905,41 @@ impl App {
       }
       TrackCommand::RemoveLocal => self.remove_local(std::slice::from_ref(&track)),
       TrackCommand::BlockTrack => {
+        let was_current_blocked = self
+          .player
+          .current
+          .as_ref()
+          .is_some_and(|current| self.data.is_track_blocked(current));
+        let was_favorite = self.data.is_favorite(&track);
         let blocked = self.data.toggle_block_track(&track);
-        vec![
+        // Le blocage retire le titre des favoris : même rafraîchissement qu'un retrait normal.
+        if blocked && was_favorite {
+          self.entered_rows(Screen::Liked);
+        }
+        let mut effects = vec![
           self.data_changed(),
           toast_effect(if blocked {
             "Blocked track"
           } else {
             "Unblocked track"
           }),
-        ]
+        ];
+        // Dislike = skip du titre en cours, sauf dans un jam (la file est commune).
+        let is_current_now = self
+          .player
+          .current
+          .as_ref()
+          .is_some_and(|current| self.data.is_track_blocked(current));
+        if blocked && is_current_now && !was_current_blocked && self.jam.is_none() {
+          let was_playing = self.playback.is_playing;
+          effects.extend(self.go_next(false, None));
+          // Plus rien à jouer (tout est bloqué) : le moteur audio doit s'arrêter.
+          if was_playing && !self.playback.is_playing {
+            effects.push(Effect::AudioPause);
+            effects.push(self.state_effect(false));
+          }
+        }
+        effects
       }
       TrackCommand::BlockArtist => {
         let name = track.artist.clone().unwrap_or_default();

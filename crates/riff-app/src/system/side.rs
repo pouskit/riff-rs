@@ -1,9 +1,9 @@
 //! Côté système du `Program` : fil système, déduplication, envoi de l'état (session média, Discord, paroles), pochette.
 
-use super::bridge;
 use super::host::{Host, HostInit, HostRequest, Report, TrayLabels};
 use super::now_playing::SyncGate;
 use super::{Command, Dedup, platform, startup};
+use super::{autostart, bridge};
 use crate::app::{App, Message};
 use crate::images::Decoded;
 use std::io;
@@ -38,6 +38,8 @@ pub struct SystemSide {
   cover: Cover,
   discord: Option<DiscordKey>,
   media_wanted: Option<bool>,
+  /// Dernier état de la case « Always on top » envoyé au menu.
+  always_on_top_sent: bool,
   hwnd: Option<isize>,
   /// La fenêtre principale est masquée dans la zone de notification.
   pub main_hidden: bool,
@@ -54,6 +56,8 @@ impl SystemSide {
       let init = HostInit {
         labels: labels(app),
         media_session: app.settings.media_session,
+        always_on_top: app.settings.main_always_on_top,
+        autostart: autostart::current_state(),
       };
       let report = Arc::new(Report::default());
       startup::set_report(Arc::clone(&report));
@@ -74,6 +78,7 @@ impl SystemSide {
       cover: Cover::default(),
       discord: None,
       media_wanted: None,
+      always_on_top_sent: app.settings.main_always_on_top,
       hwnd: None,
       main_hidden: false,
       quitting: false,
@@ -91,6 +96,7 @@ impl SystemSide {
       cover: Cover::default(),
       discord: None,
       media_wanted: None,
+      always_on_top_sent: false,
       hwnd: None,
       main_hidden: false,
       quitting: false,
@@ -110,6 +116,19 @@ impl SystemSide {
       && self
         .report()
         .is_some_and(|report| report.tray_active.load(Ordering::Relaxed))
+  }
+
+  /// Le fil système crée une zone de notification : une fenêtre cachée au lancement pourra y être rappelée.
+  #[must_use]
+  pub fn expects_tray(&self) -> bool {
+    cfg!(any(windows, target_os = "linux")) && self.host.is_some()
+  }
+
+  /// Bascule « Start with Windows » et remet la case du menu d'aplomb d'après le registre.
+  pub fn toggle_autostart(&self) {
+    if let Some(host) = &self.host {
+      host.send(HostRequest::Autostart(autostart::toggle()));
+    }
   }
 
   /// Fenêtre principale connue : la session média peut s'ouvrir sous Windows.
@@ -141,6 +160,12 @@ impl SystemSide {
         enabled: wanted,
         hwnd: self.hwnd,
       });
+    }
+    if let Some(host) = &self.host
+      && self.always_on_top_sent != app.settings.main_always_on_top
+    {
+      self.always_on_top_sent = app.settings.main_always_on_top;
+      host.send(HostRequest::AlwaysOnTop(self.always_on_top_sent));
     }
     let cover_request = self.follow_cover(app);
     if let Some(host) = &self.host {
@@ -242,6 +267,8 @@ fn labels(app: &App) -> TrayLabels {
   TrayLabels {
     show_hide: app.i18n.t("Show/Hide"),
     play_pause: app.i18n.t("Play/Pause"),
+    always_on_top: app.i18n.t("Always on top"),
+    start_with_windows: app.i18n.t("Start with Windows"),
     quit: app.i18n.t("Quit"),
   }
 }

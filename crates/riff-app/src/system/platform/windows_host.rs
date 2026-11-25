@@ -17,8 +17,8 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
   CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW, HWND_MESSAGE, MSG,
   PBT_APMRESUMEAUTOMATIC, PBT_APMRESUMESUSPEND, PM_NOREMOVE, PeekMessageW, PostThreadMessageW,
-  RegisterClassW, TranslateMessage, WM_APP, WM_POWERBROADCAST, WM_WTSSESSION_CHANGE, WNDCLASSW,
-  WS_OVERLAPPED, WTS_SESSION_UNLOCK,
+  RegisterClassW, TranslateMessage, WM_APP, WM_ENDSESSION, WM_POWERBROADCAST, WM_QUERYENDSESSION,
+  WM_WTSSESSION_CHANGE, WNDCLASSW, WS_OVERLAPPED, WTS_SESSION_UNLOCK,
 };
 use windows::core::w;
 
@@ -87,6 +87,73 @@ impl Drop for PowerWatcher {
     // SAFETY: la fenêtre a été créée par `create` sur ce fil.
     unsafe {
       let _ = WTSUnRegisterSessionNotification(self.0);
+      let _ = DestroyWindow(self.0);
+    }
+  }
+}
+
+unsafe extern "system" fn session_proc(
+  window: HWND,
+  message: u32,
+  wparam: WPARAM,
+  lparam: LPARAM,
+) -> LRESULT {
+  match message {
+    // Arrêt ou redémarrage de Windows : l'état de lecture est écrit avant la fin du processus.
+    WM_QUERYENDSESSION => {
+      crate::resume::flush();
+      LRESULT(1)
+    }
+    WM_ENDSESSION => {
+      if wparam.0 != 0 {
+        crate::resume::flush();
+      }
+      LRESULT(0)
+    }
+    // SAFETY: appel direct de la procédure par défaut avec les arguments reçus.
+    _ => unsafe { DefWindowProcW(window, message, wparam, lparam) },
+  }
+}
+
+/// Fenêtre de premier niveau jamais affichée : une fenêtre de messages (`HWND_MESSAGE`) ne reçoit pas la fin de session.
+struct SessionWatcher(HWND);
+
+impl SessionWatcher {
+  fn create() -> io::Result<Self> {
+    // SAFETY: classe et fenêtre locales au fil appelant, détruites dans `Drop`.
+    unsafe {
+      let instance = HINSTANCE(GetModuleHandleW(None).map_err(io::Error::other)?.0);
+      let class = WNDCLASSW {
+        lpfnWndProc: Some(session_proc),
+        hInstance: instance,
+        lpszClassName: w!("RiffSessionWatcher"),
+        ..Default::default()
+      };
+      RegisterClassW(&class);
+      let window = CreateWindowExW(
+        Default::default(),
+        class.lpszClassName,
+        w!("Riff"),
+        WS_OVERLAPPED,
+        0,
+        0,
+        0,
+        0,
+        None,
+        None,
+        Some(instance),
+        None,
+      )
+      .map_err(io::Error::other)?;
+      Ok(Self(window))
+    }
+  }
+}
+
+impl Drop for SessionWatcher {
+  fn drop(&mut self) {
+    // SAFETY: la fenêtre a été créée par `create` sur ce fil.
+    unsafe {
       let _ = DestroyWindow(self.0);
     }
   }
@@ -166,7 +233,12 @@ fn run(
       None
     }
   };
-  let tray = match Tray::create(&init.labels, events.clone()) {
+  let tray = match Tray::create(
+    &init.labels,
+    init.always_on_top,
+    init.autostart,
+    events.clone(),
+  ) {
     Ok(tray) => {
       report
         .tray_active
@@ -175,11 +247,15 @@ fn run(
     }
     Err(error) => {
       tracing::warn!(%error, "zone de notification indisponible");
+      let _ = events.send(SystemEvent::TrayUnavailable);
       None
     }
   };
   let _watcher = PowerWatcher::create()
     .inspect_err(|error| tracing::warn!(%error, "veille non surveillée"))
+    .ok();
+  let _session = SessionWatcher::create()
+    .inspect_err(|error| tracing::warn!(%error, "fin de session non surveillée"))
     .ok();
   let mut core = Core::new(events.clone(), Arc::clone(report), init.media_session);
 
@@ -195,6 +271,16 @@ fn run(
           HostRequest::Labels(labels) => {
             if let Some(tray) = &tray {
               tray.set_labels(&labels);
+            }
+          }
+          HostRequest::AlwaysOnTop(on) => {
+            if let Some(tray) = &tray {
+              tray.set_always_on_top(on);
+            }
+          }
+          HostRequest::Autostart(state) => {
+            if let Some(tray) = &tray {
+              tray.set_autostart(state);
             }
           }
           HostRequest::Resume => resume(manager.as_ref(), &mut core, report),

@@ -24,6 +24,9 @@ struct State {
   hover: HoverTrack,
   pressed: bool,
   focused: bool,
+  /// Décalage du repère du contenu vers celui de la fenêtre, reçu par `overlay` avant chaque mise à jour. Une `scrollable` passe
+  /// à son contenu un curseur et des bornes décalés de son défilement : un menu s'ouvre en repère de fenêtre.
+  translation: Vector,
 }
 
 impl Focusable for State {
@@ -359,7 +362,7 @@ where
           _ => None,
         };
         if let (Some(on_position), Some(position)) = (on_position, cursor.position_over(bounds)) {
-          shell.publish(on_position(position));
+          shell.publish(on_position(position + state.translation));
           shell.capture_event();
         }
       }
@@ -375,9 +378,11 @@ where
             shell.capture_event();
           }
         }
-        keyboard::Key::Named(key::Named::ContextMenu) => self.open_context(bounds, shell),
+        keyboard::Key::Named(key::Named::ContextMenu) => {
+          self.open_context(bounds + state.translation, shell)
+        }
         keyboard::Key::Named(key::Named::F10) if modifiers.shift() => {
-          self.open_context(bounds, shell)
+          self.open_context(bounds + state.translation, shell)
         }
         _ => {}
       },
@@ -448,6 +453,7 @@ where
     viewport: &Rectangle,
     translation: Vector,
   ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
+    tree.state.downcast_mut::<State>().translation = translation;
     self.content.as_widget_mut().overlay(
       &mut tree.children[0],
       layout,
@@ -777,5 +783,61 @@ mod tests {
       next.as_mut(),
     );
     assert!(tree.state.downcast_ref::<State>().focused);
+  }
+
+  /// Lignes de 40 px dans une liste défilante, avec le simulateur d'iced : le défilement passe par les vrais widgets.
+  fn scrolled_list<'a>() -> iced_test::Simulator<'a, Msg> {
+    let rows = (0..40).map(|_| {
+      Element::from(
+        focusable::<Msg, iced::Renderer>(space().width(Length::Fill).height(40))
+          .on_context(Msg::Context),
+      )
+    });
+    let mut sim = iced_test::Simulator::new(iced::widget::scrollable(
+      iced::widget::Column::with_children(rows),
+    ));
+    sim.point_at(Point::new(30.0, 100.0));
+    let _ = sim.simulate([Event::Mouse(mouse::Event::WheelScrolled {
+      delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -300.0 },
+    })]);
+    sim
+  }
+
+  #[test]
+  fn a_right_click_in_a_scrolled_list_gives_the_window_position() {
+    let mut sim = scrolled_list();
+    let _ = sim.simulate([Event::Mouse(mouse::Event::ButtonPressed(
+      mouse::Button::Right,
+    ))]);
+    assert_eq!(
+      sim.into_messages().collect::<Vec<_>>(),
+      [Msg::Context(Point::new(30.0, 100.0))]
+    );
+  }
+
+  /// La touche Menu ouvre au centre de la ligne, décalé comme le contenu défilé.
+  #[test]
+  fn the_menu_key_in_a_scrolled_list_gives_the_window_center() {
+    let mut widget = widget();
+    let mut tree = tree_of(&widget, true);
+    let node = node();
+    let viewport = Rectangle::with_size(Size::new(100.0, 40.0));
+    let _ = Widget::overlay(
+      &mut widget,
+      &mut tree,
+      Layout::new(&node),
+      &(),
+      &viewport,
+      Vector::new(0.0, -300.0),
+    );
+    assert_eq!(
+      send(
+        &mut widget,
+        &mut tree,
+        &named(key::Named::ContextMenu),
+        mouse::Cursor::Unavailable
+      ),
+      vec![Msg::Context(Point::new(50.0, -280.0))]
+    );
   }
 }

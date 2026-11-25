@@ -30,7 +30,7 @@ use crate::screens::{
 use crate::settings::{self, LegacyStorage, NativeSettings, ThemeMode};
 use crate::stream::{self, ResolveOptions};
 use crate::system::side::{SystemSide, tray_labels};
-use crate::system::{SystemEvent, update_install, updates};
+use crate::system::{SystemEvent, autostart, update_install, updates};
 use crate::theme::file::{self, LoadedTheme};
 use crate::theme::{ActiveTheme, cover};
 use crate::ui::{ListId, PlayerMessage, ReplyTag, Ui, UiMessage};
@@ -159,6 +159,8 @@ pub enum Message {
   Shortcut(Box<Message>),
   /// Événement du système : seconde instance, touche média, menu de la zone de notification, raccourci global.
   System(SystemEvent),
+  /// Bascule « Always on top » de la fenêtre principale (menu de la zone de notification).
+  ToggleMainAlwaysOnTop,
   /// Identifiant natif de la fenêtre principale (HWND sous Windows), pour la session média.
   MainHandle(u64),
   /// Pochette du titre en cours, chargée pour la session média.
@@ -275,6 +277,12 @@ pub enum Effect {
   AbortSearch,
   ScheduleSave(u64),
   WriteUserData(Box<UserData>),
+  /// File et titre à reprendre au prochain lancement.
+  SaveResume(Box<crate::resume::ResumeState>),
+  /// Position à reprendre au prochain lancement.
+  SaveResumePosition(crate::resume::ResumePosition),
+  /// Message `ResumeRetry` de ce jeton après la durée.
+  ResumeRetry(u64, Duration),
   Toast(String, ToastKind),
   PrepareAutoplay {
     artists: Vec<String>,
@@ -353,6 +361,8 @@ pub enum Effect {
   OpenMini(MiniWindow),
   CloseMini,
   MiniLevel(bool),
+  /// Niveau de la fenêtre principale : au premier plan ou normal.
+  MainLevel(bool),
   MiniDrag,
   /// Demande `shuffle_pick(ctx)` au plugin de mélange.
   PluginPick {
@@ -475,10 +485,20 @@ pub struct App {
   pub import: ImportState,
   /// Jam en cours : `None` hors jam, aucune tâche ni abonnement.
   pub jam: Option<Box<crate::jam::state::JamState>>,
+  /// Reprise de la lecture au lancement : ce qui est enregistré, relance en attente.
+  pub resume: crate::resume::ResumeTracker,
   unique: u64,
 }
 
 impl App {
+  /// Effet de niveau de la fenêtre principale pour le réglage courant et le mode compact.
+  pub(crate) fn main_level_effect(&self) -> Effect {
+    Effect::MainLevel(main_on_top(
+      self.settings.main_always_on_top,
+      self.window.mini.is_some(),
+    ))
+  }
+
   #[must_use]
   pub fn new(window_state: PersistedWindowState, settings: NativeSettings, i18n: I18n) -> Self {
     let now = Instant::now();
@@ -531,6 +551,7 @@ impl App {
       plugins: crate::plugins::PluginsState::default(),
       import: ImportState::default(),
       jam: None,
+      resume: crate::resume::ResumeTracker::default(),
       unique: 0,
     }
   }
@@ -574,8 +595,13 @@ impl App {
       self.entry_motion.enabled && self.screen == Screen::Queue && Self::may_change_queue(&message);
     let queue_before =
       watch_queue.then(|| self.queue_seen.unwrap_or_else(|| self.queue_signature()));
+    let resume_watch = Self::may_change_queue(&message).then(|| crate::resume::Watch::of(&message));
     let effects = self.dispatch(message);
-    let effects = self.jam_after_update(effects);
+    let mut effects = self.jam_after_update(effects);
+    if let Some(watch) = resume_watch {
+      let saves = self.resume_after(watch, &effects);
+      effects.extend(saves);
+    }
     // `renderQueueView` recrée les lignes à chaque changement de la file ou du titre en cours (`app.js:4564`, `12503`, `14689`).
     if let Some(before) = queue_before {
       let after = self.queue_signature();
@@ -661,6 +687,13 @@ impl App {
       Message::Import(message) => self.update_import(message),
       Message::Download(message) => self.update_download(message),
       Message::Chrome(action) => vec![Effect::Chrome(action)],
+      Message::ToggleMainAlwaysOnTop => {
+        self.settings.main_always_on_top = !self.settings.main_always_on_top;
+        vec![
+          self.main_level_effect(),
+          Effect::SaveSettings(Box::new(self.settings.clone())),
+        ]
+      }
       Message::SetThemeMode(mode) => {
         self.settings.theme_mode = mode;
         if self.settings.native_theme.is_none() {
@@ -1229,8 +1262,16 @@ impl App {
         | Message::ToastExpired(_)
         | Message::ToastTimeout(..)
         | Message::ToastHover(..)
+        | Message::Core(_)
         | Message::Ui(
-          UiMessage::RowEntered(..)
+          UiMessage::PanelMoved
+            | UiMessage::SidebarDragMoved(_)
+            | UiMessage::CardHover(..)
+            | UiMessage::HomeHover(..)
+            | UiMessage::ControlHover(..)
+            | UiMessage::SearchScrolled(..)
+            | UiMessage::HomeRowScrolled(..)
+            | UiMessage::RowEntered(..)
             | UiMessage::RowLeft(..)
             | UiMessage::HistoryHover(_)
             | UiMessage::ListScrolled(..)
@@ -1846,6 +1887,8 @@ fn window_event(event: Event, status: event::Status, id: window::Id) -> Option<M
 pub struct StartArgs {
   /// `--dev` : écran de développement.
   pub dev: bool,
+  /// `--tray` : lancement de la session Windows, la fenêtre principale reste cachée dans la zone de notification.
+  pub tray: bool,
   /// `--t0 <ms> --startup-log <fichier>` : mesure le démarrage depuis l'instant donné (ms Unix), puis quitte.
   pub startup_probe: Option<(u128, PathBuf)>,
   /// `--bench-scroll <fichier>` : défilement automatique de « Titres aimés », mesuré, puis quitte.
@@ -1869,6 +1912,7 @@ impl StartArgs {
     while let Some(arg) = args.next() {
       match arg.as_str() {
         "--dev" => parsed.dev = true,
+        "--tray" => parsed.tray = true,
         "--t0" => t0 = args.next().and_then(|value| value.parse().ok()),
         "--startup-log" => log = args.next().map(PathBuf::from),
         "--bench-scroll" => parsed.bench_scroll = args.next().map(PathBuf::from),
@@ -1928,6 +1972,8 @@ pub struct Program {
   latency: Option<LatencyLog>,
   main_window: window::Id,
   mini_window: Option<window::Id>,
+  /// Agrandie ou plein écran d'une fenêtre née cachée (`--tray`), rendus à sa première apparition.
+  deferred_mode: crate::window::DeferredMode,
   analyser_hidden: bool,
   scene_frames: Option<Arc<Mutex<SceneFrames>>>,
   scene_play_pending: bool,
@@ -2050,7 +2096,7 @@ impl Program {
   ///
   /// # Panics
   /// Le fil de contrôle du moteur audio n'a pas démarré.
-  pub fn boot(args: &StartArgs, main_settings: window::Settings) -> (Self, Task<Message>) {
+  pub fn boot(args: &StartArgs, mut main_settings: window::Settings) -> (Self, Task<Message>) {
     let window_state = PersistedWindowState::read(&paths::window_state_path()).unwrap_or_default();
     let storage = LegacyStorage::open(&riff_core::adopt::import_storage_path());
     // Premier lancement : l'offre d'import se décide AVANT tout `load_or_import`, qui écrirait les fichiers.
@@ -2081,6 +2127,20 @@ impl Program {
     app.lyrics.translation_enabled = backend.core.translation_enabled();
     // Pas de lecture de l'analyseur tant qu'aucun visualiseur n'est visible : petite FFT (décision 5).
     backend.engine.set_analyser_hidden(true);
+    let mut system = SystemSide::start(&app);
+    let plan = boot_plan(
+      args.tray,
+      system.expects_tray(),
+      app.settings.visual.mini_lyrics && !app.import_waiting(),
+      &mut main_settings,
+    );
+    let start_hidden = plan.start_hidden;
+    main_settings.level = mini_level(app.settings.main_always_on_top);
+    if start_hidden {
+      system.main_hidden = true;
+      app.window.main_hidden = true;
+    }
+    let deferred_mode = plan.deferred;
     let (main_window, open_main) = window::open(main_settings);
     let mut tasks = vec![
       open_main
@@ -2088,8 +2148,7 @@ impl Program {
         .map(Message::MainHandle),
     ];
     let mut mini_window = None;
-    // Sans choix de l'écran d'import, pas de fenêtre de mini-paroles : elle viendrait de réglages pas encore acceptés.
-    if app.settings.visual.mini_lyrics && !app.import_waiting() {
+    if plan.open_mini {
       let (id, open) = window::open(mini_settings(app.settings.visual.mini_window));
       mini_window = Some(id);
       app.lyrics.mini_open = true;
@@ -2100,7 +2159,7 @@ impl Program {
     }
     // Démarrage réel seulement : ni les scènes ni le banc de défilement, que le calque noir masquerait.
     if args.scene.is_none() && args.bench_scroll.is_none() {
-      app.splash = Some(crate::splash::Splash::default());
+      app.splash = plan.splash.then(crate::splash::Splash::default);
       app.view_motion.enabled = true;
       app.entry_motion.enabled = true;
       app.home_spinner.enabled = true;
@@ -2139,7 +2198,26 @@ impl Program {
         }));
       }
     }
-    let system = SystemSide::start(&app);
+    // Reprise de la lecture : jamais pendant une mesure, qui n'écrit pas non plus l'état.
+    // Une seconde instance (mode multi-instance) démarre vide : une seule instance joue et écrit.
+    if args.scene.is_none()
+      && args.bench_scroll.is_none()
+      && args.startup_probe.is_none()
+      && !crate::system::startup::secondary()
+    {
+      crate::resume::install();
+      if !app.import_waiting()
+        && let Some(saved) =
+          crate::resume::load(&riff_core::paths::resolve_data_dir(), &app.data.platform)
+      {
+        // Des fichiers ouverts avec l'application remplacent la relance du titre.
+        app.restore_playback(saved, args.files.is_empty());
+        tasks.push(Task::future(async {
+          tokio::time::sleep(crate::resume::START_FALLBACK).await;
+          Message::Player(PlayerMessage::Resume)
+        }));
+      }
+    }
     let (plugin_sink, plugin_inbox) = crate::plugins::PluginInbox::new();
     let plugin_host = riff_plugins::PluginHost::with_sink(crate::plugins::state_dir(), plugin_sink);
     // Plugins consentis : activés au lancement, hors du fil d'interface pour la lecture des fichiers.
@@ -2165,6 +2243,7 @@ impl Program {
         latency: args.latency_log.clone().map(LatencyLog::new),
         main_window,
         mini_window,
+        deferred_mode,
         analyser_hidden: true,
         scene_play_pending: scene_frames.is_some(),
         scene_frames,
@@ -2213,7 +2292,7 @@ impl Program {
         return self.sync_system();
       }
       other if self.closes_to_tray(&other) => return self.hide_main(),
-      other => other,
+      other => with_deferred_close_state(self.deferred_mode, other),
     };
     let message = match message {
       Message::ForWindow(id, inner) if Some(id) == self.mini_window => match mini_message(*inner) {
@@ -2243,6 +2322,10 @@ impl Program {
     };
     let plugin_message = matches!(message, Message::Plugin(_));
     let language_changed = matches!(message, Message::LanguageLoaded(_));
+    let tick = match &message {
+      Message::Audio(AudioEvent::Position(at)) => Some(*at),
+      _ => None,
+    };
     let effects = self.app.update(message);
     if language_changed {
       self.system.set_labels(tray_labels(&self.app));
@@ -2260,6 +2343,12 @@ impl Program {
     let mut tasks = Vec::with_capacity(effects.len() + 1);
     for effect in effects {
       tasks.push(self.run_effect(effect));
+    }
+    // Position exacte pour l'écriture de fin de session, sans écriture ici.
+    if let Some(at) = tick
+      && self.app.resume_live()
+    {
+      crate::resume::note_position(at);
     }
     let wanted = self.app.wanted_images();
     for key in self.app.images.request(&wanted) {
@@ -2330,11 +2419,24 @@ impl Program {
   fn show_main(&mut self) -> Task<Message> {
     self.system.main_hidden = false;
     self.app.window.main_hidden = false;
-    Task::batch([
+    let deferred = std::mem::take(&mut self.deferred_mode);
+    let mut tasks = vec![
       window::set_mode(self.main_window, window::Mode::Windowed),
       window::minimize(self.main_window, false),
       window::gain_focus(self.main_window),
-    ])
+    ];
+    if deferred.fullscreen {
+      tasks.push(window::set_mode(self.main_window, window::Mode::Fullscreen));
+    } else if deferred.maximized {
+      tasks.push(window::maximize(self.main_window, true));
+    }
+    if deferred.mini_lyrics && self.mini_window.is_none() {
+      let (id, open) = window::open(mini_settings(self.app.settings.visual.mini_window));
+      self.mini_window = Some(id);
+      self.app.lyrics.mini_open = true;
+      tasks.push(open.discard());
+    }
+    Task::batch(tasks)
   }
 
   fn system_event(&mut self, event: SystemEvent) -> Task<Message> {
@@ -2358,6 +2460,13 @@ impl Program {
         }
         Task::batch(tasks)
       }
+      SystemEvent::ToggleAlwaysOnTop => self.update(Message::ToggleMainAlwaysOnTop),
+      SystemEvent::ToggleAutostart => {
+        self.system.toggle_autostart();
+        Task::none()
+      }
+      SystemEvent::TrayUnavailable if self.system.main_hidden => self.show_main(),
+      SystemEvent::TrayUnavailable => Task::none(),
       SystemEvent::Quit => {
         self.system.quitting = true;
         self.update(Message::CloseRequested)
@@ -2637,6 +2746,7 @@ impl Program {
       Effect::MiniLevel(on_top) => self
         .mini_window
         .map_or_else(Task::none, |id| window::set_level(id, mini_level(on_top))),
+      Effect::MainLevel(on_top) => window::set_level(self.main_window, mini_level(on_top)),
       Effect::MiniDrag => self.mini_window.map_or_else(Task::none, window::drag),
       Effect::CoreJson {
         tag,
@@ -2654,6 +2764,11 @@ impl Program {
           task
         }
       }
+      // Quitter le mode mini remet la fenêtre au niveau normal : le réglage « Always on top » reprend ensuite la main.
+      Effect::LeaveMiniWindow(..) => run(effect, &self.backend).chain(window::set_level(
+        self.main_window,
+        mini_level(main_on_top(self.app.settings.main_always_on_top, false)),
+      )),
       other => run(other, &self.backend),
     }
   }
@@ -2798,6 +2913,57 @@ fn mini_message(event: Message) -> Option<Message> {
   Some(Message::Lyrics(message))
 }
 
+/// Niveau voulu de la fenêtre principale : le mode compact la garde au premier plan quel que soit le réglage.
+const fn main_on_top(setting: bool, compact: bool) -> bool {
+  setting || compact
+}
+
+/// Décisions de `Program::boot` qui dépendent du lancement `--tray`.
+struct BootPlan {
+  start_hidden: bool,
+  deferred: crate::window::DeferredMode,
+  /// Ouvrir la fenêtre de mini-paroles dès le lancement.
+  open_mini: bool,
+  /// Jouer le splash : caché, il se jouerait sans personne et réveillerait l'animation.
+  splash: bool,
+}
+
+/// Sans choix de l'écran d'import, pas de mini-paroles : elles viendraient de réglages pas encore acceptés (`mini_wanted`).
+fn boot_plan(
+  tray_arg: bool,
+  tray_expected: bool,
+  mini_wanted: bool,
+  main_settings: &mut window::Settings,
+) -> BootPlan {
+  let start_hidden = autostart::starts_hidden(tray_arg, tray_expected);
+  let mut deferred = crate::window::DeferredMode::default();
+  if start_hidden {
+    deferred = crate::window::hide_at_creation(main_settings);
+    deferred.mini_lyrics = mini_wanted;
+  }
+  BootPlan {
+    start_hidden,
+    deferred,
+    open_mini: mini_wanted && !start_hidden,
+    splash: !start_hidden,
+  }
+}
+
+/// Une fenêtre née cachée n'est ni agrandie ni en plein écran : à la fermeture, les états mis de côté comptent.
+fn with_deferred_close_state(deferred: crate::window::DeferredMode, message: Message) -> Message {
+  match message {
+    Message::CloseStateKnown {
+      is_maximized,
+      is_full_screen,
+    } => Message::CloseStateKnown {
+      is_maximized: is_maximized || deferred.maximized,
+      is_full_screen: is_full_screen || deferred.fullscreen,
+    },
+    other => other,
+  }
+}
+
+/// Niveau de fenêtre d'après un réglage « au premier plan » (fenêtre principale ou paroles mini).
 const fn mini_level(on_top: bool) -> window::Level {
   if on_top {
     window::Level::AlwaysOnTop
@@ -3182,6 +3348,7 @@ fn run(effect: Effect, backend: &Arc<Backend>) -> Task<Message> {
     Effect::OpenMini(_)
     | Effect::CloseMini
     | Effect::MiniLevel(_)
+    | Effect::MainLevel(_)
     | Effect::MiniDrag
     | Effect::JamHost { .. }
     | Effect::JamJoin { .. }
@@ -3325,10 +3492,11 @@ fn run(effect: Effect, backend: &Arc<Backend>) -> Task<Message> {
       if let Err(err) = state.write(&paths::window_state_path()) {
         tracing::warn!(error = %err, "écriture de window-state.json");
       }
-      if let Some(data) = data
-        && let Err(err) = data.save(&user_data::user_data_path())
-      {
-        tracing::warn!(error = %err, "écriture de user-data.json");
+      if let Some(data) = data {
+        if let Err(err) = data.save(&user_data::user_data_path()) {
+          tracing::warn!(error = %err, "écriture de user-data.json");
+        }
+        crate::resume::flush();
       }
       iced::exit()
     }
@@ -3825,6 +3993,21 @@ fn run(effect: Effect, backend: &Arc<Backend>) -> Task<Message> {
       }
     }))
     .discard(),
+    Effect::SaveResume(_) | Effect::SaveResumePosition(_) if !crate::resume::installed() => {
+      Task::none()
+    }
+    Effect::SaveResume(state) => {
+      crate::resume::set_state(*state);
+      Task::future(tokio::task::spawn_blocking(crate::resume::flush)).discard()
+    }
+    Effect::SaveResumePosition(position) => {
+      crate::resume::set_position(position);
+      Task::future(tokio::task::spawn_blocking(crate::resume::flush)).discard()
+    }
+    Effect::ResumeRetry(token, delay) => Task::future(async move {
+      tokio::time::sleep(delay).await;
+      Message::Player(PlayerMessage::ResumeRetry(token))
+    }),
     Effect::Toast(text, kind) => Task::done(Message::ShowToast(text, kind, None)),
     Effect::PrepareAutoplay { artists, payload } => {
       let backend = Arc::clone(backend);
@@ -4101,6 +4284,45 @@ mod tests {
     )
   }
 
+  #[test]
+  fn the_compact_mode_keeps_the_main_window_on_top() {
+    assert!(main_on_top(true, false));
+    assert!(main_on_top(false, true));
+    assert!(!main_on_top(false, false));
+    let mut app = app();
+    app.window.mini = Some(crate::window::PreMini {
+      bounds: crate::window::WindowBounds::default(),
+      is_maximized: false,
+    });
+    for _ in 0..2 {
+      let effects = app.update(Message::ToggleMainAlwaysOnTop);
+      assert!(!effects.contains(&Effect::MainLevel(false)));
+      assert!(effects.contains(&Effect::MainLevel(true)));
+    }
+  }
+
+  #[test]
+  fn the_tray_toggle_flips_the_main_window_level_and_saves() {
+    let mut app = app();
+    assert!(!app.settings.main_always_on_top);
+    let on = app.update(Message::ToggleMainAlwaysOnTop);
+    assert!(app.settings.main_always_on_top);
+    assert!(on.contains(&Effect::MainLevel(true)));
+    assert!(on.iter().any(|effect| matches!(
+      effect,
+      Effect::SaveSettings(settings) if settings.main_always_on_top
+    )));
+    let off = app.update(Message::ToggleMainAlwaysOnTop);
+    assert!(!app.settings.main_always_on_top);
+    assert!(off.contains(&Effect::MainLevel(false)));
+  }
+
+  #[test]
+  fn the_always_on_top_setting_maps_to_the_window_level() {
+    assert_eq!(mini_level(true), window::Level::AlwaysOnTop);
+    assert_eq!(mini_level(false), window::Level::Normal);
+  }
+
   fn app_playing() -> App {
     let mut app = app();
     app.player.current = Some(crate::user_data::Track {
@@ -4108,6 +4330,7 @@ mod tests {
       title: Some("Titre".to_string()),
       ..crate::user_data::Track::default()
     });
+    app.mark_resume_saved();
     app
   }
 
@@ -4380,6 +4603,91 @@ mod tests {
       "fenêtre réduite"
     );
     assert!(mini_message(Message::WindowRescaled(2.0)).is_none());
+  }
+
+  fn saved_window_settings() -> window::Settings {
+    PersistedWindowState {
+      is_maximized: true,
+      ..PersistedWindowState::default()
+    }
+    .settings()
+  }
+
+  #[test]
+  fn a_tray_launch_hides_the_window_and_holds_back_the_mini_window_and_the_splash() {
+    let mut settings = saved_window_settings();
+    let plan = boot_plan(true, true, true, &mut settings);
+    assert!(plan.start_hidden && !settings.visible && !settings.maximized);
+    assert!(!plan.open_mini && !plan.splash);
+    assert_eq!(
+      plan.deferred,
+      crate::window::DeferredMode {
+        maximized: true,
+        fullscreen: false,
+        mini_lyrics: true
+      }
+    );
+  }
+
+  #[test]
+  fn a_normal_launch_or_a_missing_tray_shows_the_window() {
+    for (tray_arg, tray_expected) in [(false, true), (true, false), (false, false)] {
+      let mut settings = saved_window_settings();
+      let plan = boot_plan(tray_arg, tray_expected, true, &mut settings);
+      assert!(!plan.start_hidden && settings.visible && settings.maximized);
+      assert!(plan.open_mini && plan.splash);
+      assert_eq!(plan.deferred, crate::window::DeferredMode::default());
+    }
+    let mut settings = saved_window_settings();
+    assert!(!boot_plan(false, true, false, &mut settings).open_mini);
+  }
+
+  #[test]
+  fn quitting_a_tray_session_keeps_the_saved_maximized_and_fullscreen_states() {
+    let deferred = crate::window::DeferredMode {
+      maximized: true,
+      fullscreen: false,
+      mini_lyrics: false,
+    };
+    let known = |is_maximized, is_full_screen| Message::CloseStateKnown {
+      is_maximized,
+      is_full_screen,
+    };
+    let flags = |message: Message| match message {
+      Message::CloseStateKnown {
+        is_maximized,
+        is_full_screen,
+      } => Some((is_maximized, is_full_screen)),
+      _ => None,
+    };
+    assert_eq!(
+      flags(with_deferred_close_state(deferred, known(false, false))),
+      Some((true, false))
+    );
+    assert_eq!(
+      flags(with_deferred_close_state(
+        crate::window::DeferredMode::default(),
+        known(false, false)
+      )),
+      Some((false, false))
+    );
+    assert!(flags(with_deferred_close_state(deferred, Message::CloseRequested)).is_none());
+    let mut app = app();
+    let effects = app.update(with_deferred_close_state(deferred, known(false, false)));
+    let [Effect::SaveWindowAndExit(state, _)] = effects.as_slice() else {
+      panic!("{effects:?}")
+    };
+    assert!(state.is_maximized && !state.is_full_screen);
+  }
+
+  #[test]
+  fn start_args_read_the_tray_launch_and_keep_the_other_arguments() {
+    let args = |list: &[&str]| StartArgs::parse(list.iter().map(|arg| (*arg).to_string()));
+    assert!(!args(&[]).tray);
+    assert!(args(&["--tray"]).tray);
+    let both = args(&["--tray", "--dev", "a.mp3"]);
+    assert!(both.tray && both.dev);
+    assert_eq!(both.files, vec![PathBuf::from("a.mp3")]);
   }
 
   #[test]

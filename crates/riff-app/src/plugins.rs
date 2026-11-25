@@ -172,22 +172,24 @@ impl App {
       tracing::warn!(reason = %riff_core::logging::redact(reason), "tirage du plugin refusé");
     }
     let platform = self.data.platform.clone();
+    // Dans un jam, la file est commune : les titres bloqués y sont joués.
+    let in_jam = self.jam.is_some();
     let index = result
       .ok()
       .flatten()
       .and_then(|value| serde_json::from_value::<Track>(value).ok())
       .and_then(|pick| {
-        self
-          .player
-          .queue
-          .iter()
-          .position(|track| track.is_same(&pick, &platform) && !self.data.is_blocked(track))
+        self.player.queue.iter().position(|track| {
+          track.is_same(&pick, &platform) && (in_jam || !self.data.is_blocked(track))
+        })
       });
     let step = match index {
       Some(index) => self.player.play_at(index),
       None => {
         let data = &self.data;
-        self.player.advance(&|track| data.is_blocked(track))
+        self
+          .player
+          .advance(&|track| !in_jam && data.is_blocked(track))
       }
     };
     self.apply_next(step, pending.crossfade)
@@ -529,6 +531,7 @@ mod tests {
     app.player.shuffle = true;
     app.plugins.active = true;
     app.plugins.picks = true;
+    app.mark_resume_saved();
     app
   }
 

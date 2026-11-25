@@ -53,6 +53,7 @@ La CI installe `ffmpeg` et `ffprobe` avant de lancer les tests.
 - Visuels : barres, forme, fond de pochette flou, bannières par titre.
 - Import de playlists Spotify, Apple Music, Yandex Music, Deezer, SoundCloud et YouTube, et de fichiers d'export.
 - Bibliothèque, favoris, historique, file de lecture, titres téléchargés, minuterie de veille.
+- Reprise au lancement : la file (ordre, aléatoire, liste d'origine), le titre en cours et sa position sont gardés dans `playback-state.json` et `playback-position.json` (dossier de données), puis relus à chaque lancement, en lecture. La position s'écrit au plus toutes les 10 s pendant la lecture, à la pause, au déplacement, à la fermeture et à l'arrêt de Windows ; jamais la file d'un jam.
 - Discord Rich Presence, scrobbling Last.fm, contrôles du système (session média), zone de notification, raccourcis globaux, fenêtre compacte.
 - Thèmes et éditeur de thème, plugins Rhai, commande `riff-app lyrics` qui affiche la ligne de paroles courante dans un terminal.
 - Interface en anglais, avec les dictionnaires russe et ukrainien de Riff.

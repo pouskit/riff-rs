@@ -49,5 +49,7 @@
  "Not available during a Jam": "Indisponible pendant un Jam",
  "Jam relay URL": "URL du relais Jam",
  "Leave empty to use the default encrypted relays": "Laisser vide pour utiliser les relais chiffrés par défaut",
- "Invalid relay URL, using the default relays": "URL de relais invalide, relais par défaut utilisés"
+ "Invalid relay URL, using the default relays": "URL de relais invalide, relais par défaut utilisés",
+ "Always on top": "Toujours au premier plan",
+ "Start with Windows": "Démarrer avec Windows"
 }

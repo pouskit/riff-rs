@@ -677,6 +677,7 @@ mod tests {
     let mut app = app();
     app.player.current = Some(track());
     app.playback.is_playing = true;
+    app.mark_resume_saved();
     app
   }
 

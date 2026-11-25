@@ -124,6 +124,26 @@ impl PersistedWindowState {
   }
 }
 
+/// États d'une fenêtre créée cachée, rendus à sa première apparition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeferredMode {
+  pub maximized: bool,
+  pub fullscreen: bool,
+  /// La fenêtre de mini-paroles voulue par les réglages, pas encore ouverte.
+  pub mini_lyrics: bool,
+}
+
+/// Réglages d'une fenêtre qui naît cachée (lancement `--tray`). Agrandie ou en plein écran dès la création, Windows
+/// la montrerait un instant : ces deux états sont mis de côté et rendus par [`DeferredMode`] à la première apparition.
+pub fn hide_at_creation(settings: &mut window::Settings) -> DeferredMode {
+  settings.visible = false;
+  DeferredMode {
+    maximized: std::mem::take(&mut settings.maximized),
+    fullscreen: std::mem::take(&mut settings.fullscreen),
+    mini_lyrics: false,
+  }
+}
+
 /// Suit la fenêtre : garde les dernières bornes de la fenêtre ni agrandie ni réduite.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct WindowTracker {
@@ -405,6 +425,26 @@ mod tests {
     let dir = crate::test_temp::TempDir::new("app-window");
     let path = dir.join(name);
     (dir, path)
+  }
+
+  #[test]
+  fn a_window_born_hidden_defers_its_maximized_and_fullscreen_states() {
+    let mut settings = PersistedWindowState {
+      is_maximized: true,
+      ..PersistedWindowState::default()
+    }
+    .settings();
+    assert!(settings.visible && settings.maximized);
+    let deferred = hide_at_creation(&mut settings);
+    assert!(!settings.visible && !settings.maximized && !settings.fullscreen);
+    assert_eq!(
+      deferred,
+      DeferredMode {
+        maximized: true,
+        fullscreen: false,
+        mini_lyrics: false
+      }
+    );
   }
 
   #[test]

@@ -942,6 +942,15 @@ impl App {
       effects.push(Effect::AudioPause);
       effects.push(self.state_effect(false));
     }
+    // Hôte : le titre en cours, joué malgré son blocage pendant le jam, cède la place au suivant.
+    let current_blocked = self
+      .player
+      .current
+      .as_ref()
+      .is_some_and(|track| self.data.is_blocked(track));
+    if current_blocked && self.playback.is_playing {
+      effects.extend(self.go_next(false, None));
+    }
     let text = match cause {
       EndCause::Stopped => None,
       EndCause::HostEnded => Some("The host ended the Jam"),

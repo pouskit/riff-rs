@@ -5,6 +5,7 @@ use super::channel::{self, Claim, Server};
 use super::host::Report;
 use super::protocol::LyricsState;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::mpsc;
 
@@ -12,6 +13,7 @@ static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 static SERVER: OnceLock<Server> = OnceLock::new();
 static SENDER: OnceLock<mpsc::UnboundedSender<SystemEvent>> = OnceLock::new();
 static REPORT: OnceLock<Arc<Report>> = OnceLock::new();
+static SECONDARY: AtomicBool = AtomicBool::new(false);
 static RECEIVER: Mutex<Option<mpsc::UnboundedReceiver<SystemEvent>>> = Mutex::new(None);
 
 /// Suite du démarrage.
@@ -53,6 +55,12 @@ pub fn report() -> Option<Arc<Report>> {
 /// Enregistre l'état du fil système (une seule fois).
 pub fn set_report(report: Arc<Report>) {
   let _ = REPORT.set(report);
+}
+
+/// Seconde instance du mode multi-instance : elle ne sert pas le canal local.
+#[must_use]
+pub fn secondary() -> bool {
+  SECONDARY.load(Ordering::Relaxed)
 }
 
 /// Cette instance sert le canal local.
@@ -117,7 +125,11 @@ pub fn acquire(args: &[String]) -> Outcome {
       let _ = SERVER.set(server);
       Outcome::Run
     }
+    // Lancement de session alors qu'une instance tourne déjà : rien à montrer, la fenêtre ne doit pas surgir.
+    // Avant le mode multi-instance : une seconde instance n'a pas de zone de notification et s'afficherait.
+    Ok(Claim::Existing) if super::autostart::is_tray_launch(args) => Outcome::Exit(0),
     Ok(Claim::Existing) if multi_instance() => {
+      SECONDARY.store(true, Ordering::Relaxed);
       separate_data_dir();
       Outcome::Run
     }

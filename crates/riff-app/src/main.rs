@@ -2,8 +2,8 @@
 //! Lancement de l'application native.
 
 use riff_app::app::{Program, StartArgs};
-use riff_app::system::cli;
 use riff_app::system::startup::{self, Outcome};
+use riff_app::system::{autostart, cli};
 use riff_app::theme::fonts;
 use riff_app::window::PersistedWindowState;
 use riff_core::paths;
@@ -86,9 +86,12 @@ fn main() -> iced::Result {
   // Mesures et essais (`--t0`, `--scene`, `--bench-scroll`...) ne prennent jamais le canal d'une vraie instance.
   if !raw_args.iter().any(|arg| {
     arg == "--t0" || arg == "--scene" || arg == "--bench-scroll" || arg == "--latency-log"
-  }) && let Outcome::Exit(code) = startup::acquire(&raw_args)
-  {
-    std::process::exit(code);
+  }) {
+    if let Outcome::Exit(code) = startup::acquire(&raw_args) {
+      std::process::exit(code);
+    }
+    // Instance principale seulement : un exécutable déplacé reprend sa place dans le démarrage de la session.
+    autostart::refresh_at_launch();
   }
   // Identité de la barre des tâches : les fenêtres se regroupent avec le raccourci « Riff (natif) ». Avant la première fenêtre.
   #[cfg(windows)]

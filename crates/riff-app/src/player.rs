@@ -287,6 +287,10 @@ impl PlayerState {
       next += 1;
       attempts += 1;
     }
+    // Tout est bloqué : on ne relance pas un titre bloqué.
+    if len > 0 && attempts >= len {
+      return NextStep::Nothing;
+    }
     let next = if next >= len { 0 } else { next };
     self
       .play_index(next)
@@ -311,6 +315,26 @@ impl PlayerState {
     self.start(track, false);
     self.index = index;
     self.queue_history = index.into_iter().collect();
+  }
+
+  /// File reprise au lancement : le titre attend, sans chargement, que la reprise le relance.
+  pub fn restore(&mut self, queue: Vec<Track>, index: Option<usize>, current: Option<Track>) {
+    self.index = index.filter(|&index| index < queue.len());
+    self.queue = queue;
+    self.queue_history = self.index.into_iter().collect();
+    self.play_history.clear();
+    self.current = current;
+    self.loading = false;
+    self.token += 1;
+  }
+
+  /// Relance le titre en cours sous un nouveau jeton. `false` sans titre.
+  pub fn restart_current(&mut self) -> bool {
+    let Some(track) = self.current.clone() else {
+      return false;
+    };
+    self.start(track, true);
+    true
   }
 
   /// La radio a reçu des titres : joue le premier qui n'est pas bloqué, à partir du suivant.
@@ -933,6 +957,34 @@ mod tests {
     assert_eq!(player.index, Some(2));
     assert_eq!(player.queue_history, [2]);
     assert_eq!(player.queue[2].id.as_deref(), Some("a"));
+  }
+
+  #[test]
+  fn a_restored_queue_waits_without_loading_and_drops_an_out_of_range_index() {
+    let mut player = PlayerState::new(1);
+    let token = player.token;
+    player.restore(tracks(&["a", "b"]), Some(1), Some(track("b")));
+    assert_eq!(player.index, Some(1));
+    assert_eq!(player.queue_history, [1]);
+    assert!(!player.loading);
+    assert!(player.token > token);
+    assert_eq!(played(&player.next(&none, false)), "a");
+    player.restore(tracks(&["a"]), Some(5), None);
+    assert_eq!(player.index, None);
+    assert!(player.queue_history.is_empty());
+    assert!(!player.restart_current());
+  }
+
+  #[test]
+  fn restarting_the_current_track_takes_a_new_token_and_loads() {
+    let mut player = playing(&["a", "b"], 1);
+    player.loading = false;
+    let token = player.token;
+    assert!(player.restart_current());
+    assert!(player.loading);
+    assert!(player.token > token);
+    assert!(player.play_history.is_empty());
+    assert_eq!(player.index, Some(1));
   }
 
   #[test]

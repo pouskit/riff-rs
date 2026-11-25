@@ -586,9 +586,14 @@ impl App {
           .map(|track| track.canonical_id(&platform))
           .collect();
         // Comme `some(isSameTrack)` de Riff, un doublon à l'intérieur du lot compte aussi.
-        let fresh = tracks
+        let fresh: Vec<Track> = tracks
           .into_iter()
-          .filter(|track| known.insert(track.canonical_id(&platform)));
+          .filter(|track| known.insert(track.canonical_id(&platform)))
+          .collect();
+        // Un titre aimé n'est plus bloqué.
+        for track in &fresh {
+          self.data.unblock_track(track);
+        }
         self.data.favorites.extend(fresh);
       }
       NEW_TARGET | "" => {
@@ -1185,7 +1190,12 @@ impl App {
       ManageMessage::AccountRead(Ok(None)) => Vec::new(),
       ManageMessage::AccountRead(Ok(Some(value))) => match self.apply_account(&value) {
         Ok(report) => {
-          let mut effects = vec![self.data_changed(), self.save(), toast("Account imported")];
+          let mut effects = vec![
+            self.data_changed(),
+            self.save(),
+            self.main_level_effect(),
+            toast("Account imported"),
+          ];
           effects.extend(self.open_modal(Modal::ImportReport(Box::new(report))));
           effects
         }

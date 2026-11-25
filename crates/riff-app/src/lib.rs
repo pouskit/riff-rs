@@ -23,6 +23,7 @@ pub mod player;
 pub mod plugins;
 pub mod prefs;
 pub mod prefs_visual;
+pub mod resume;
 pub mod screens;
 pub mod settings;
 pub mod splash;

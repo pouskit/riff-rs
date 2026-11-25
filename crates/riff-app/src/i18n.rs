@@ -344,6 +344,7 @@ pub const UI_KEYS: &[&str] = &[
   "by",
   "Show/Hide",
   "Play/Pause",
+  "Start with Windows",
   "Quit",
   "already used by another program",
   "Not available on this system.",

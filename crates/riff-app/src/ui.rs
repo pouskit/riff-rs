@@ -345,6 +345,10 @@ pub enum PlayerMessage {
   Level(f32),
   AutoplayReady(Vec<Track>),
   PlayMyWave,
+  /// Reprise du lancement, quand la fenêtre ne l'a pas encore lancée.
+  Resume,
+  /// Nouvel essai de la reprise pour ce jeton.
+  ResumeRetry(u64),
 }
 
 /// Réponses JSON du core, par demande.
