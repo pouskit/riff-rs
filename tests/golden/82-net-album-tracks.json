@@ -1,0 +1,32 @@
+{
+  "body": {
+    "album": {
+      "artist": "*",
+      "cover": "*",
+      "id": "*",
+      "title": "*",
+      "trackCount": "*",
+      "year": "*"
+    },
+    "success": "*",
+    "tracks": [
+      {
+        "artist": "*",
+        "disc": "*",
+        "duration": "*",
+        "durationMs": "*",
+        "id": "*",
+        "isExplicit": "*",
+        "no": "*",
+        "thumbnail": "*",
+        "title": "*"
+      }
+    ]
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/albums/tracks?title=Discovery\u0026artist=Daft%20Punk",
+  "status": "200"
+}

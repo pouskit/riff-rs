@@ -1,0 +1,22 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-patch:
+        patterns: ["*"]
+        update-types: ["patch"]
+    ignore:
+      - dependency-name: interprocess
+      - dependency-name: global-hotkey
+      - dependency-name: tray-icon
+      - dependency-name: souvlaki
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns: ["*"]

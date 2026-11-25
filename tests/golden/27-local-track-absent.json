@@ -1,0 +1,12 @@
+{
+  "body": "File not found in local cache",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "29"
+  },
+  "kind": "local",
+  "request": "GET /api/local-track?id=inconnu",
+  "status": "404"
+}

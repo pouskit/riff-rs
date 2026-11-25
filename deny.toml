@@ -1,0 +1,77 @@
+[graph]
+all-features = false
+no-default-features = false
+
+[advisories]
+yanked = "warn"
+# cargo-deny 0.20 ne propose pas "warn" pour unmaintained : "workspace" échoue
+# seulement pour les dépendances directes, les transitives ne bloquent pas.
+unmaintained = "workspace"
+unsound = "workspace"
+ignore = []
+
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "CDLA-Permissive-2.0",
+  "0BSD",
+]
+confidence-threshold = 0.8
+# Presse-papiers d'iced (window_clipboard). BSL-1.0 : aucune obligation pour un binaire distribué.
+exceptions = [
+  { allow = ["BSL-1.0"], crate = "clipboard-win" },
+  { allow = ["BSL-1.0"], crate = "error-code" },
+  # Icône de zone de notification sous Linux (tray-icon). Domaine public.
+  { allow = ["Unlicense"], crate = "ksni" },
+  # Transport iroh (iroh-relay) : cibles WebAssembly seulement, présentes dans le graphe du lock. Domaine public.
+  { allow = ["Unlicense"], crate = "async_io_stream" },
+  { allow = ["Unlicense"], crate = "pharos" },
+  { allow = ["Unlicense"], crate = "ws_stream_wasm" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+# Les jokers (sentry-*) ne fonctionnent pas dans cargo-deny 0.20 : noms explicites.
+deny = [
+  { crate = "sentry", reason = "télémétrie" },
+  { crate = "sentry-core", reason = "télémétrie" },
+  { crate = "sentry-types", reason = "télémétrie" },
+  { crate = "sentry-backtrace", reason = "télémétrie" },
+  { crate = "sentry-panic", reason = "télémétrie" },
+  { crate = "sentry-tracing", reason = "télémétrie" },
+  { crate = "sentry-log", reason = "télémétrie" },
+  { crate = "sentry-anyhow", reason = "télémétrie" },
+  { crate = "sentry-contexts", reason = "télémétrie" },
+  { crate = "sentry-debug-images", reason = "télémétrie" },
+  { crate = "posthog", reason = "télémétrie" },
+  { crate = "posthog-rs", reason = "télémétrie" },
+  { crate = "segment", reason = "télémétrie" },
+  { crate = "opentelemetry", reason = "télémétrie" },
+  { crate = "opentelemetry-otlp", reason = "télémétrie" },
+  { crate = "opentelemetry_sdk", reason = "télémétrie" },
+  { crate = "opentelemetry-http", reason = "télémétrie" },
+  { crate = "opentelemetry-proto", reason = "télémétrie" },
+  { crate = "opentelemetry-semantic-conventions", reason = "télémétrie" },
+  { crate = "opentelemetry-stdout", reason = "télémétrie" },
+  { crate = "opentelemetry-appender-tracing", reason = "télémétrie" },
+  { crate = "opentelemetry-jaeger", reason = "télémétrie" },
+  { crate = "datadog", reason = "télémétrie" },
+  { crate = "amplitude", reason = "télémétrie" },
+  { crate = "mixpanel", reason = "télémétrie" },
+  { crate = "bugsnag", reason = "télémétrie" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -1,0 +1,21 @@
+{
+  "body": {
+    "albums": [
+      {
+        "artist": "*",
+        "cover": "*",
+        "id": "*",
+        "title": "*",
+        "trackCount": "*",
+        "year": "*"
+      }
+    ],
+    "success": "*"
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/albums/search?q=daft%20punk",
+  "status": "200"
+}

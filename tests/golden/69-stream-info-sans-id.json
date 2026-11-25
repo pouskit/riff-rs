@@ -1,0 +1,17 @@
+{
+  "body": {
+    "error": "could not extract audio stream",
+    "needAuth": false,
+    "success": false
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "75",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/stream-info",
+  "status": "500"
+}

@@ -1,0 +1,14 @@
+{
+  "body": {
+    "isCustom": "*",
+    "isExplicit": "*",
+    "lyrics": "*",
+    "success": "*"
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/lyrics?title=One%20More%20Time\u0026artist=Daft%20Punk",
+  "status": "200"
+}

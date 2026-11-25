@@ -1,0 +1,26 @@
+{
+  "body": {
+    "hasMore": "*",
+    "success": "*",
+    "tracks": [
+      {
+        "album": "*",
+        "artist": "*",
+        "duration": "*",
+        "id": "*",
+        "isCached": "*",
+        "isExplicit": "*",
+        "platform": "*",
+        "thumbnail": "*",
+        "title": "*",
+        "url": "*"
+      }
+    ]
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/search?q=daft%20punk\u0026source=ytmusic",
+  "status": "200"
+}

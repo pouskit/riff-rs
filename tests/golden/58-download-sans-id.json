@@ -1,0 +1,16 @@
+{
+  "body": {
+    "error": "missing track information",
+    "success": false
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "53",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/download",
+  "status": "400"
+}

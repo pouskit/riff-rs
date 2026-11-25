@@ -1,0 +1,24 @@
+{
+  "body": {
+    "files": [
+      "../../assets/devsize/photo_2026-10-24_12-37-42.jpg",
+      "../../assets/devsize/photo_2026-10-31_18-09-01.jpg",
+      "../../assets/devsize/photo_2026-10-31_18-09-13.jpg",
+      "../../assets/devsize/photo_2026-10-31_18-09-22.jpg",
+      "../../assets/devsize/photo_2026-10-31_18-31-51.jpg",
+      "../../assets/devsize/photo_2026-10-31_18-32-26.jpg",
+      "../../assets/devsize/sticker.webp"
+    ],
+    "success": true
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "380",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/devsize-memes",
+  "status": "200"
+}

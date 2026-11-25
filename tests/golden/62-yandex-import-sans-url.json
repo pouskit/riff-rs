@@ -1,0 +1,17 @@
+{
+  "body": {
+    "error": "unsupported link",
+    "status": 400,
+    "success": false
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "57",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/yandex-import",
+  "status": "400"
+}

@@ -1,0 +1,12 @@
+{
+  "body": {
+    "error": "*",
+    "success": "*"
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/spotify-auth-start",
+  "status": "400"
+}

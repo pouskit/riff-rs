@@ -1,0 +1,117 @@
+[package]
+name = "riff-app"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "riff_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "riff-app"
+path = "src/main.rs"
+
+[dependencies]
+riff-audio = { path = "../riff-audio" }
+riff-core = { path = "../riff-core" }
+riff-plugins = { path = "../riff-plugins" }
+bytemuck = { version = "1", features = ["derive"] }
+bytes = "1"
+iced = { version = "=0.14.0", default-features = false, features = [
+  "advanced",
+  "canvas",
+  "crisp",
+  "highlighter",
+  "image-without-codecs",
+  "svg",
+  "tokio",
+  "wayland",
+  "web-colors",
+  "wgpu",
+  "x11",
+] }
+getrandom = "0.4"
+regex = "1"
+sha2 = "0.11"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+material-colors = { version = "=0.5.0", features = ["quantize"] }
+serde = { version = "1", features = ["derive"] }
+dirs = "7"
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "io-util", "signal"] }
+interprocess = { version = "=2.4.8", features = ["tokio"] }
+url = "2"
+rfd = "0.18.0"
+jiff = "1.0.2"
+minisign-verify = "0.3.0"
+iroh = { version = "1.5", default-features = false, features = ["tls-aws-lc-rs", "portmapper"] }
+iroh-tickets = "1"
+
+[target.'cfg(windows)'.dependencies]
+widestring = "1"
+tray-icon = { version = "=0.26.1", default-features = false }
+global-hotkey = "=0.10.0"
+souvlaki = "=0.9.3"
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+  "Win32_Storage_EnhancedStorage",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Console",
+  "Win32_System_LibraryLoader",
+  "Win32_System_RemoteDesktop",
+  "Win32_System_Threading",
+  "Win32_System_Variant",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1.34"
+
+# NON COMPILÉ sur la machine de développement (Windows seul) : à vérifier par la CI.
+[target.'cfg(target_os = "linux")'.dependencies]
+tray-icon = { version = "=0.26.1", default-features = false, features = ["ksni"] }
+global-hotkey = "=0.10.0"
+souvlaki = { version = "=0.9.3", default-features = false, features = ["use_zbus"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+souvlaki = "=0.9.3"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros"] }
+iced_test = "=0.14.0"
+
+# Empaquetage (cargo-packager 0.11.8, `cargo install cargo-packager --version 0.11.8 --locked`), après `cargo build --release` :
+#   Windows : `cargo packager --release --formats nsis`
+#   Linux et macOS : construits en CI seulement, voir .github/workflows/release.yml (macOS : --formats app, signature ad hoc par codesign, dmg par hdiutil).
+# Chemins relatifs à `crates/riff-app` (l'outil s'y place). Détail : docs/decisions/002-packaging.md.
+# `category = "Music"` produit `Categories=AudioVideo;Audio;Music;` (cargo-packager, config/category.rs).
+[package.metadata.packager]
+product-name = "Riff (natif)"
+identifier = "io.github.rootscripts.riff.native"
+publisher = "Pouskit"
+description = "Riff (natif) - music player"
+copyright = "Copyright (c) 2026 rootscripts, Pouskit"
+license-file = "../../LICENSE"
+category = "Music"
+icons = ["packaging/icons/icon.ico", "packaging/icons/icon.icns", "assets/icon-512.png"]
+
+[package.metadata.packager.nsis]
+installer-mode = "currentUser"
+installer-icon = "packaging/icons/icon.ico"
+template = "packaging/installer.nsi"
+languages = ["English", "French"]

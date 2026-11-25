@@ -1,0 +1,15 @@
+{
+  "body": "sha256:630dcd2966c4336691125448bbb25b4ff412a49c732db2c8abc1b8581bd710dd len:32",
+  "headers": {
+    "accept-ranges": "bytes",
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "32",
+    "content-range": "bytes 0-31/70000",
+    "content-type": "audio/mpeg"
+  },
+  "kind": "local",
+  "request": "GET /api/local-track?id=testvid1234",
+  "status": "206"
+}

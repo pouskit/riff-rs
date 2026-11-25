@@ -1,0 +1,12 @@
+{
+  "body": {
+    "cover": "*",
+    "success": "*"
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/track-cover?artist=Daft%20Punk\u0026title=One%20More%20Time",
+  "status": "200"
+}

@@ -1,0 +1,16 @@
+{
+  "body": {
+    "cached": false,
+    "streamUrl": null
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "33",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/check-cache?id=testvid1234",
+  "status": "200"
+}

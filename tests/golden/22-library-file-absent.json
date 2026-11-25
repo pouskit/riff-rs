@@ -1,0 +1,12 @@
+{
+  "body": "File not found in library",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "25"
+  },
+  "kind": "local",
+  "request": "GET /api/library-file?id=local_ffffffffffff",
+  "status": "404"
+}

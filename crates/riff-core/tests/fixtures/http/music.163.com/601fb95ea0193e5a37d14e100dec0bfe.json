@@ -1,0 +1,12 @@
+{
+  "recorded_at": "2026-11-12T06:50:36Z",
+  "method": "GET",
+  "url": "http://music.163.com/api/song/lyric?id=17455800&kv=1&lv=1&tv=-1&yv=1",
+  "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "status": 200,
+  "headers": {
+    "content-type": "text/plain;charset=UTF-8"
+  },
+  "body": "{\"sgc\":false,\"sfy\":false,\"qfy\":false,\"transUser\":{\"id\":0,\"status\":99,\"demand\":1,\"userid\":0,\"nickname\":\"REDACTED\",\"uptime\":0},\"lrc\":{\"version\":51,\"lyric\":\"[00:00.00] 作词 : Anthony Moore/Guy-Manuel de Homem-Christo/Thomas Bangalter\\n[00:01.00] 作曲 : Anthony Moore/Guy-Manuel de Homem-Christo/Thomas Bangalter\\n[00:02.00] 制作人 : Guy-Manuel de Homem-Christo/Thomas Bangalter\\n[00:04.13]\\n[00:31.13]Ligne factice 1\\n[00:46.80]Ligne factice 2\\n[01:04.42]Ligne factice 3\\n[01:05.68]Ligne factice 4\\n[01:07.84]Ligne factice 5\"},\"klyric\":{\"version\":0,\"lyric\":\"\"},\"tlyric\":{\"version\":4,\"lyric\":\"[by:REDACTED]\\n[00:31.13]Traduction factice 1\\n[00:46.80]Traduction factice 2\\n[01:04.42]Traduction factice 3\"},\"yrc\":{\"version\":3,\"lyric\":\"[0,1000](0,1000,0) 作词 : Anthony Moore/Guy-Manuel de Homem-Christo/Thomas Bangalter\\n[1000,1000](1000,1000,0) 作曲 : Anthony Moore/Guy-Manuel de Homem-Christo/Thomas Bangalter\\n[2000,1000](2000,1000,0) 制作人 : Guy-Manuel de Homem-Christo/Thomas Bangalter\\n[30260,2040](30260,480,0)Ligne (30740,480,0)factice (31220,1080,0)1\\n[45920,1770](45920,480,0)Ligne (46400,450,0)factice (46850,840,0)2\"},\"ytlrc\":{\"version\":3,\"lyric\":\"[00:30.260]Traduction factice 1\\n[00:45.920]Traduction factice 2\\n[01:03.500]Traduction factice 3\\n[01:04.730]Traduction factice 4\"},\"code\":200}",
+  "note": "lyrics truncated and uploader name removed after recording"
+}

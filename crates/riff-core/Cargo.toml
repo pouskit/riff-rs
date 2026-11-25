@@ -1,0 +1,47 @@
+[package]
+name = "riff-core"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+serde_json = { version = "1.0", features = ["preserve_order"] }
+serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
+dirs = "7"
+url = "2"
+jiff = "1.0.2"
+flate2 = "1.1"
+aes-gcm = "0.11"
+sha1 = "0.11"
+sha2 = "0.11"
+getrandom = "0.4"
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+regex = "1"
+md-5 = "0.11"
+base64 = "0.23"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+bytes = "1"
+thiserror = "2"
+http = "1"
+keyring = "4.2.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security_Cryptography",
+] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
+# Auto-dépendance : active `replay` pour les tests seulement (les builds normaux ne la voient pas).
+riff-core = { path = ".", features = ["replay"] }
+
+[features]
+# Rejeu de fixtures HTTP pour les tests. Jamais par défaut, jamais dans un build de release.
+replay = []
+
+[lints]
+workspace = true

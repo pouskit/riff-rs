@@ -1,0 +1,14 @@
+{
+  "body": {
+    "authUrl": "*",
+    "error": "*",
+    "success": "*",
+    "token": "*"
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/lastfm/token",
+  "status": "200"
+}

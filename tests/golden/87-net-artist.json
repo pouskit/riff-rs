@@ -1,0 +1,48 @@
+{
+  "body": {
+    "artist": {
+      "albums": [
+        {
+          "artist": "*",
+          "cover": "*",
+          "id": "*",
+          "recordType": "*",
+          "source": "*",
+          "title": "*",
+          "trackCount": "*",
+          "year": "*"
+        }
+      ],
+      "avatar": "*",
+      "banner": "*",
+      "bio": "*",
+      "fans": "*",
+      "isKnownArtist": "*",
+      "isVerified": "*",
+      "monthlyListeners": "*",
+      "name": "*",
+      "tracks": [
+        {
+          "artist": "*",
+          "duration": "*",
+          "durationMs": "*",
+          "id": "*",
+          "isCached": "*",
+          "isExplicit": "*",
+          "platform": "*",
+          "searchQuery": "*",
+          "thumbnail": "*",
+          "title": "*",
+          "url": "*"
+        }
+      ]
+    },
+    "success": "*"
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/artist?name=Daft%20Punk",
+  "status": "200"
+}

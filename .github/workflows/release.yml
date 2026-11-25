@@ -1,0 +1,191 @@
+name: Release
+
+# Étiquette vX.Y.Z poussée : construit les paquets et crée un BROUILLON de release.
+# Rien n'est publié automatiquement. La signature minisign est faite à la main par le mainteneur
+# (docs/RELEASING.md) : aucune clé, aucun secret dans ce workflow.
+on:
+  push:
+    tags: ["v*"]
+
+# Droits minimaux : lecture du dépôt. `contents: write` n'est accordé qu'au travail `publish`.
+permissions:
+  contents: read
+
+# Un run par étiquette ; une release en cours n'est jamais annulée.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check-tag:
+    name: contrôle de l'étiquette
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: L'étiquette doit valoir v + [workspace.package].version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(awk '/^\[/{s=($0=="[workspace.package]")} s && /^version[ ]*=/{gsub(/.*= *"|".*/,""); print; exit}' Cargo.toml)
+          if [ -z "$version" ]; then
+            echo "::error::version introuvable dans [workspace.package] de Cargo.toml"
+            exit 1
+          fi
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::étiquette $TAG différente de v$version (Cargo.toml)"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build ${{ matrix.name }}
+    needs: check-tag
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.check-tag.outputs.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x64
+            os: windows-latest
+          - name: linux-x64
+            os: ubuntu-latest
+          # macOS x64 est compilé en croisé sur le runner arm64 (macos-latest).
+          - name: macos-x64
+            os: macos-latest
+            target: x86_64-apple-darwin
+            suffix: x64
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            suffix: arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Cible macOS
+        if: runner.os == 'macOS'
+        run: rustup target add "${{ matrix.target }}"
+      - name: Dépendances système Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # Mêmes paquets que ci.yml (voir ses commentaires).
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
+      # Pas de rust-cache ici : un binaire publié ne doit pas dépendre d'un cache partagé.
+      - name: cargo-packager
+        run: cargo install cargo-packager --version 0.11.8 --locked
+
+      # Windows : l'outil impose le nom riff-app_<version>_x64-setup.exe, que l'application télécharge (docs/RELEASING.md).
+      - name: Paquet Windows (NSIS)
+        if: runner.os == 'Windows'
+        run: |
+          cargo build --release --locked -p riff-app
+          cargo packager --release --formats nsis
+          mkdir dist
+          cp "target/release/riff-app_${VERSION}_x64-setup.exe" dist/
+
+      - name: Paquet Linux (AppImage)
+        if: runner.os == 'Linux'
+        env:
+          # linuxdeploy et ses greffons sont des AppImage : sans FUSE sur le runner, ils doivent s'extraire eux-mêmes.
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          cargo build --release --locked -p riff-app
+          cargo packager --release --formats appimage
+          mkdir dist
+          cp "target/release/riff-app_${VERSION}_x86_64.AppImage" dist/
+
+      # macOS : l'outil ne signe pas en ad hoc (il exige une identité, puis ajoute --options runtime et --timestamp).
+      # Comme l'original (scripts/mac-adhoc-sign.js), le .app est signé ad hoc avant le zip et le dmg.
+      # Le dmg est fait par hdiutil : `--formats dmg` reconstruirait un .app non signé.
+      - name: Paquets macOS (.app, zip, dmg)
+        if: runner.os == 'macOS'
+        env:
+          TARGET: ${{ matrix.target }}
+          SUFFIX: ${{ matrix.suffix }}
+        run: |
+          cargo build --release --locked -p riff-app --target "$TARGET"
+          cargo packager --release --formats app --target "$TARGET"
+          app="target/$TARGET/release/Riff (natif).app"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
+          mkdir dist stage
+          ditto -c -k --keepParent "$app" "dist/riff-app_${VERSION}_macos-${SUFFIX}.zip"
+          ditto "$app" "stage/Riff (natif).app"
+          ln -s /Applications stage/Applications
+          hdiutil create -volname "Riff (natif)" -srcfolder stage -ov -format UDZO "dist/riff-app_${VERSION}_macos-${SUFFIX}.dmg"
+
+      - name: Contenu de dist
+        run: ls -l dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: brouillon de release
+    needs: [check-tag, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.check-tag.outputs.version }}
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          merge-multiple: true
+          path: dist
+      - name: Vérifier les fichiers attendus
+        run: |
+          ls -l dist
+          for f in \
+            "riff-app_${VERSION}_x64-setup.exe" \
+            "riff-app_${VERSION}_x86_64.AppImage" \
+            "riff-app_${VERSION}_macos-x64.dmg" "riff-app_${VERSION}_macos-x64.zip" \
+            "riff-app_${VERSION}_macos-arm64.dmg" "riff-app_${VERSION}_macos-arm64.zip"; do
+            test -f "dist/$f" || { echo "::error::fichier manquant : $f"; exit 1; }
+          done
+          test "$(ls dist | wc -l)" -eq 6 || { echo "::error::fichiers inattendus dans dist"; exit 1; }
+      # Format sha256sum (<hash>  <nom>), noms sans dossier. SHA256SUMS reste hors de dist/ pendant le calcul.
+      - name: SHA256SUMS
+        run: |
+          (cd dist && sha256sum -- *) > SHA256SUMS
+          cat SHA256SUMS
+      - name: Brouillon de release
+        run: |
+          cat > notes.md <<EOF
+          Brouillon créé par le workflow de release, non publié.
+
+          Avant publication : produire à la main, sur la machine du mainteneur, la signature minisign riff-app_${VERSION}_x64-setup.exe.minisig de l'installeur Windows, puis la joindre à ce brouillon (procédure : docs/RELEASING.md). Sans elle, l'application refuse la mise à jour.
+
+          Les binaires ne sont pas signés par un certificat (SmartScreen, Gatekeeper) : vérifier les SHA-256 avec SHA256SUMS.
+          EOF
+          flags=(--draft --verify-tag)
+          if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$TAG" dist/* SHA256SUMS "${flags[@]}" --title "Riff (natif) $VERSION" --notes-file notes.md

@@ -1,0 +1,16 @@
+{
+  "body": {
+    "battery": null,
+    "name": "Default output"
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "40",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/audio-output-info",
+  "status": "200"
+}

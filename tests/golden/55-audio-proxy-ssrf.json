@@ -1,0 +1,12 @@
+{
+  "body": "Blocked target",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "14"
+  },
+  "kind": "local",
+  "request": "GET /api/audio-proxy?url=http://127.0.0.1:1/x",
+  "status": "403"
+}

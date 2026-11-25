@@ -1,0 +1,12 @@
+{
+  "body": "Thumbnail not cached",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "20"
+  },
+  "kind": "local",
+  "request": "GET /api/local-thumbnail?id=inconnu",
+  "status": "404"
+}

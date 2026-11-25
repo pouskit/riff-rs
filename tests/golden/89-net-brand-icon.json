@@ -1,0 +1,9 @@
+{
+  "body": "(binaire)",
+  "headers": {
+    "content-type": "image/svg+xml"
+  },
+  "kind": "shape",
+  "request": "GET /api/brand-icon?name=spotify",
+  "status": "200"
+}

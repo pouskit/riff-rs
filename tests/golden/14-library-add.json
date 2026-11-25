@@ -1,0 +1,16 @@
+{
+  "body": {
+    "count": 1,
+    "success": true
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "26",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "POST /api/library-add",
+  "status": "200"
+}

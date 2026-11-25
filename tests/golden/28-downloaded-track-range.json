@@ -1,0 +1,15 @@
+{
+  "body": "sha256:1f825aa2f0020ef7cf91dfa30da4668d791c5d4824fc8e41354b89ec05795ab3 len:10",
+  "headers": {
+    "accept-ranges": "bytes",
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "10",
+    "content-range": "bytes 0-9/1000",
+    "content-type": "audio/mpeg"
+  },
+  "kind": "local",
+  "request": "GET /api/downloaded-track?name=song.mp3",
+  "status": "206"
+}

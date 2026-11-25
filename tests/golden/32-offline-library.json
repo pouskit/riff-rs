@@ -1,0 +1,32 @@
+{
+  "body": {
+    "count": 1,
+    "success": true,
+    "totalBytes": 70000,
+    "tracks": [
+      {
+        "analysis": null,
+        "artist": "Artist A",
+        "cleanId": "testvid1234",
+        "duration": 215.5,
+        "fileSize": 70000,
+        "id": "testvid1234",
+        "lastPlayed": 1700000000000,
+        "localThumbnail": "http://127.0.0.1:\u003cPORT\u003e/api/local-thumbnail?id=testvid1234",
+        "platform": "youtube",
+        "thumbnail": "",
+        "title": "Song One"
+      }
+    ]
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "330",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/offline-library",
+  "status": "200"
+}

@@ -1,0 +1,16 @@
+{
+  "body": {
+    "lines": [],
+    "success": false
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "28",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/lyrics-words",
+  "status": "200"
+}

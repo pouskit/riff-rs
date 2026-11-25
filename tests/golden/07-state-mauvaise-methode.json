@@ -1,0 +1,12 @@
+{
+  "body": "Not found",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "9"
+  },
+  "kind": "local",
+  "request": "GET /api/state",
+  "status": "404"
+}

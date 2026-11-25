@@ -1,0 +1,17 @@
+{
+  "body": {
+    "code": "spotify_error",
+    "error": "Invalid Spotify playlist URL",
+    "success": false
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "79",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/spotify-import",
+  "status": "400"
+}

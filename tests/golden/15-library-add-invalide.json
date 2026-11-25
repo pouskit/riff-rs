@@ -1,0 +1,16 @@
+{
+  "body": {
+    "error": "key must be a string at line 1 column 2",
+    "success": false
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "67",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "POST /api/library-add",
+  "status": "400"
+}

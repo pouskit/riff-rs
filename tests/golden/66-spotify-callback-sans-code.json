@@ -1,0 +1,13 @@
+{
+  "body": "\u003c!DOCTYPE html\u003e\u003chtml\u003e\u003cbody\u003e\u003cp\u003eInvalid Spotify login session.\u003c/p\u003e\u003c/body\u003e\u003c/html\u003e",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "78",
+    "content-type": "text/html; charset=utf-8"
+  },
+  "kind": "local",
+  "request": "GET /api/spotify-callback",
+  "status": "400"
+}

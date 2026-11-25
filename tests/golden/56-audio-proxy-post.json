@@ -1,0 +1,12 @@
+{
+  "body": "Method not allowed",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "18"
+  },
+  "kind": "local",
+  "request": "POST /api/audio-proxy?url=https://example.com/x",
+  "status": "405"
+}

@@ -1,0 +1,13 @@
+{
+  "body": "",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "0",
+    "content-range": "bytes */70000"
+  },
+  "kind": "local",
+  "request": "GET /api/library-file?id=local_0123456789ab",
+  "status": "416"
+}

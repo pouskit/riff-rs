@@ -1,0 +1,11 @@
+{
+  "body": "",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*"
+  },
+  "kind": "local",
+  "request": "OPTIONS /api/library",
+  "status": "204"
+}

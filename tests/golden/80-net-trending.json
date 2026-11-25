@@ -1,0 +1,23 @@
+{
+  "body": {
+    "success": "*",
+    "tracks": [
+      {
+        "artist": "*",
+        "cover": "*",
+        "duration": "*",
+        "id": "*",
+        "platform": "*",
+        "thumbnail": "*",
+        "title": "*",
+        "url": "*"
+      }
+    ]
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/trending",
+  "status": "200"
+}

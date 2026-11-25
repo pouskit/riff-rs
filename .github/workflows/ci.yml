@@ -1,0 +1,185 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# Droits minimaux : lecture du dépôt seulement. Aucun secret n'est utilisé.
+permissions:
+  contents: read
+
+# Annule les exécutions obsolètes d'une même branche ou pull request.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --no-self-update && rustup default stable
+      - run: cargo fmt --all --check
+
+  lint:
+    name: check et clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --component clippy --no-self-update && rustup default stable
+      - name: Dépendances système Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # pkg-config : localisation des bibliothèques C par les crates *-sys.
+          # libasound2-dev : alsa-sys (cpal, sortie audio).
+          # libdbus-1-dev : libdbus-sys (keyring, souvlaki).
+          # libwayland-dev, libxkbcommon-dev : wayland-sys et xkbcommon-dl (iced, winit). Déduit, non vérifié :
+          # à retirer si le premier passage réel montre qu'ils sont inutiles.
+          # x11 et wayland d'iced : x11-dl (build.rs, pkg-config tolérant), wayland-sys (dlopen, build.rs sans sonde)
+          # et xkbcommon-dl (dlopen, sans build.rs) n'exigent pas de paquet -dev de plus. Déduit, non vérifié.
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo check --workspace --all-targets --locked
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Dépendances système Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # Mêmes paquets que le job lint (voir ses commentaires).
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
+      # ffmpeg et ffprobe : 7 tests de services/download_fixture_tests.rs sortent par `return;` sans rien
+      # vérifier quand l'un des deux manque. Le contrôle ci-dessous fait échouer le job à la place.
+      - name: ffmpeg (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get install -y --no-install-recommends ffmpeg
+      - name: ffmpeg (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: ffmpeg (Windows)
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg --no-progress -y
+      - name: Contrôle ffmpeg et ffprobe
+        run: |
+          ffmpeg -version | head -n 1
+          ffprobe -version | head -n 1
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Inclut le test à deux processus de l'instance unique (riff-app/tests/single_instance.rs) sous Windows.
+      - run: cargo test --workspace --locked --no-fail-fast
+
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-deny@0.20.2
+      # Télécharge la base d'advisories RustSec (réseau, normal en CI).
+      - run: cargo deny --workspace --locked check
+
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
+        with:
+          tool: cargo-audit
+      # Les avertissements « non maintenue » et « unsound » ne font pas échouer (aucune option -D) ;
+      # seules les vulnérabilités connues bloquent.
+      - run: cargo audit
+
+  no-telemetry:
+    name: absence de télémétrie
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      # Vérifie Cargo.lock contre la liste de crates de télémétrie de deny.toml.
+      - run: cargo test -p riff-core --test no_telemetry --locked
+
+  build-release:
+    name: build release (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain
+        run: rustup toolchain install stable --profile minimal --no-self-update && rustup default stable
+      - name: Dépendances système Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # Mêmes paquets que le job lint (voir ses commentaires).
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libdbus-1-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo build --release --workspace --locked
+      # Rien n'est publié : artefact interne conservé 7 jours.
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: riff-app-${{ runner.os }}
+          path: |
+            target/release/riff-app
+            target/release/riff-app.exe
+          if-no-files-found: error
+          retention-days: 7

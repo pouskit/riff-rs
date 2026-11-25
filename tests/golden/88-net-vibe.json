@@ -1,0 +1,30 @@
+{
+  "body": {
+    "profile": {
+      "dominantScript": "*",
+      "topArtists": [],
+      "trackCount": "*",
+      "typicalDuration": "*"
+    },
+    "success": "*",
+    "tracks": [
+      {
+        "artist": "*",
+        "duration": "*",
+        "id": "*",
+        "isCached": "*",
+        "platform": "*",
+        "searchQuery": "*",
+        "thumbnail": "*",
+        "title": "*",
+        "url": "*"
+      }
+    ]
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "POST /api/vibe",
+  "status": "200"
+}

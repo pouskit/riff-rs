@@ -1,0 +1,29 @@
+{
+  "body": {
+    "error": "",
+    "ffmpeg": true,
+    "ffmpegError": "",
+    "ffmpegOptional": false,
+    "percent": 0,
+    "progress": {
+      "error": "",
+      "ffmpegError": "",
+      "percent": 0,
+      "status": "idle",
+      "tool": ""
+    },
+    "step": "",
+    "ytDlp": true,
+    "ytdlp": true
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "193",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/tools/status",
+  "status": "200"
+}

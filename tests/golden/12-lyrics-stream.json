@@ -1,0 +1,14 @@
+{
+  "body": "(non compare)",
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "cache-control": "no-cache",
+    "content-type": "text/event-stream",
+    "transfer-encoding": "chunked"
+  },
+  "kind": "headers",
+  "request": "GET /api/lyrics-stream",
+  "status": "200"
+}

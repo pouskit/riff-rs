@@ -1,0 +1,6 @@
+disallowed-methods = [
+  { path = "reqwest::Client::new", reason = "passe par riff_core::net::Http", allow-invalid = true },
+  { path = "reqwest::Client::builder", reason = "passe par riff_core::net::Http", allow-invalid = true },
+  { path = "reqwest::ClientBuilder::new", reason = "passe par riff_core::net::Http", allow-invalid = true },
+  { path = "iced_core::text::Paragraph::with_text", reason = "mise en forme de texte : passer par screens/right_panel.rs (ellipsize, text_width) ou un cache borné équivalent", allow-invalid = true },
+]

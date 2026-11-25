@@ -1,0 +1,15 @@
+[workspace]
+resolver = "3"
+members = ["crates/riff-core", "crates/riff-audio", "crates/riff-app", "crates/riff-plugins"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+version = "1.0.0-rc.1"
+
+[workspace.lints.clippy]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1

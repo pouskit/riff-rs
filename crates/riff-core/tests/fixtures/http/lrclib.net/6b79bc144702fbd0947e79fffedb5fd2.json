@@ -1,0 +1,11 @@
+{
+  "recorded_at": "2026-11-12T06:50:34Z",
+  "method": "GET",
+  "url": "https://lrclib.net/api/get?artist_name=Daft+Punk&track_name=One+More+Time",
+  "body_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json"
+  },
+  "body": "{\"id\":250327,\"name\":\"One More Time\",\"trackName\":\"One More Time\",\"artistName\":\"Daft Punk\",\"albumName\":\"Discovery\",\"duration\":320,\"instrumental\":false,\"hasWordSync\":true,\"plainLyrics\":\"Ligne factice 1\\n\\nLigne factice 2\\n\\nLigne factice 3\\nLigne factice 4\",\"syncedLyrics\":\"[00:30.75] Ligne factice 1\\n[00:33.18] \\n[00:46.35] Ligne factice 2\\n[00:49.25] \\n[01:03.76] Ligne factice 3\\n[01:04.92] Ligne factice 4\",\"lyricsfile\":\"version: '1.0'\\nmetadata:\\n  title: One More Time\\n  artist: Daft Punk\\n  album: Discovery\\n  duration_ms: 320000\\n  instrumental: false\\n  language: en\\nlines:\\n- text: Ligne factice 1\\n  start_ms: 30370\\n  end_ms: 31830\\n  words:\\n  - text: 'Ligne '\\n    start_ms: 30370\\n  - text: 'factice '\\n    start_ms: 30794\\n  - text: '1'\\n    start_ms: 31262\\n- text: Ligne factice 2\\n  start_ms: 45980\\n  end_ms: 47310\\n  words:\\n  - text: 'Ligne '\\n    start_ms: 45980\\n  - text: 'factice '\\n    start_ms: 46371\\n  - text: '2'\\n    start_ms: 46815\\n- text: Ligne factice 3\\n  start_ms: 63580\\n  end_ms: 64700\\n  words:\\n  - text: 'Ligne '\\n    start_ms: 63580\\n  - text: 'factice '\\n    start_ms: 63933\\n  - text: '3'\\n    start_ms: 64271\\n\"}"
+}

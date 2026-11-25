@@ -1,0 +1,11 @@
+{
+  "recorded_at": "2026-11-12T06:51:14Z",
+  "method": "POST",
+  "url": "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=auto&tl=fr",
+  "body_sha256": "985658aa5eae1f3e32f7f3657e2da557996e7ed2717d2571e72eaacf275678e4",
+  "status": 200,
+  "headers": {
+    "content-type": "application/json; charset=utf-8"
+  },
+  "body": "[[[\"Bonjour\",\"hello\",null,null,10]],null,\"en\",null,null,null,1,[],[[\"en\"],null,[1],[\"en\"]]]"
+}

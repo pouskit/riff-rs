@@ -1,0 +1,16 @@
+{
+  "body": {
+    "cached": true,
+    "streamUrl": "http://127.0.0.1:\u003cPORT\u003e/api/local-track?id=testvid1234"
+  },
+  "headers": {
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "83",
+    "content-type": "application/json"
+  },
+  "kind": "local",
+  "request": "GET /api/check-cache?id=testvid1234",
+  "status": "200"
+}

@@ -1,0 +1,25 @@
+{
+  "body": {
+    "lines": [
+      {
+        "end": "*",
+        "start": "*",
+        "text": "*",
+        "words": [
+          {
+            "end": "*",
+            "start": "*",
+            "text": "*"
+          }
+        ]
+      }
+    ],
+    "success": "*"
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/lyrics-words?title=One%20More%20Time\u0026artist=Daft%20Punk",
+  "status": "200"
+}

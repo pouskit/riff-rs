@@ -1,0 +1,17 @@
+[package]
+name = "riff-plugins"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+# Jamais la feature `unchecked` : elle retire les limites du bac à sable.
+rhai = { version = "=1.27.0", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+sha2 = "0.11"
+thiserror = "2"

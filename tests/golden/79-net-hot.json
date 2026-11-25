@@ -1,0 +1,23 @@
+{
+  "body": {
+    "success": "*",
+    "title": "*",
+    "tracks": [
+      {
+        "artist": "*",
+        "duration": "*",
+        "id": "*",
+        "isExplicit": "*",
+        "platform": "*",
+        "searchQuery": "*",
+        "title": "*"
+      }
+    ]
+  },
+  "headers": {
+    "content-type": "application/json"
+  },
+  "kind": "shape",
+  "request": "GET /api/hot",
+  "status": "200"
+}

@@ -1,0 +1,14 @@
+{
+  "body": "sha256:9dc177c2fde29dea8e7c29f7ddf147b7c449c99d049c62f3aac0a5933ecf76a3 len:70000",
+  "headers": {
+    "accept-ranges": "bytes",
+    "access-control-allow-headers": "*",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-allow-origin": "*",
+    "content-length": "70000",
+    "content-type": "audio/mpeg"
+  },
+  "kind": "local",
+  "request": "GET /api/library-file?id=local_0123456789ab",
+  "status": "200"
+}
