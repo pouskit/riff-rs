@@ -588,9 +588,9 @@ fn lyrics<'a>(app: &'a App, roles: Roles, area: f32) -> Element<'a, Message> {
   // Les lignes s'ajoutent tant qu'elles tiennent (tolérance : l'arrondi des tailles écran).
   let mut used = 0.0;
   let mut rows: Vec<Element<'a, Message>> = Vec::new();
-  for index in first..lyrics.lines.len() {
+  for (index, entry) in lyrics.lines.iter().enumerate().skip(first) {
     let active = state.active == Some(index);
-    let gap = lyrics.lines[index].is_gap;
+    let gap = entry.is_gap;
     let height = row_height(gap, active);
     if !rows.is_empty() && used + height > inner + 0.5 {
       break;

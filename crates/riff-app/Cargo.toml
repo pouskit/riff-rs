@@ -98,6 +98,9 @@ souvlaki = "=0.9.3"
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "net"] }
 iced_test = "=0.14.0"
+# Moteur logiciel pour les tests de rendu (iced_test) sur les machines sans GPU (CI). Dev seulement : le binaire garde wgpu seul.
+# Choisi par `ICED_TEST_BACKEND=tiny-skia` (voir .github/workflows/ci.yml) ; sans variable, wgpu reste prioritaire.
+iced = { version = "=0.14.0", default-features = false, features = ["tiny-skia"] }
 
 # Empaquetage (cargo-packager 0.11.8, `cargo install cargo-packager --version 0.11.8 --locked`), après `cargo build --release` :
 #   Windows : `cargo packager --release --formats nsis`

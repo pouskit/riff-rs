@@ -103,7 +103,11 @@ jobs:
           ffprobe -version | head -n 1
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # Inclut le test à deux processus de l'instance unique (riff-app/tests/single_instance.rs) sous Windows.
-      - run: cargo test --workspace --locked --no-fail-fast
+      # ICED_TEST_BACKEND=tiny-skia : les runners n'ont pas de GPU. Sans cela, iced_test crée un moteur wgpu qui
+      # panique (Linux : « Create new headless renderer ») ou plante (Windows : STATUS_ACCESS_VIOLATION, tests/fonts.rs).
+      - env:
+          ICED_TEST_BACKEND: tiny-skia
+        run: cargo test --workspace --locked --no-fail-fast
 
   deny:
     name: cargo deny
