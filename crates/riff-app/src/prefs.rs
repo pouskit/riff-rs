@@ -1912,10 +1912,10 @@ mod tests {
     );
     let effects = send(
       &mut app,
-      SettingsMessage::WallpaperSync(WallpaperSyncMessage::OutputMode(OutputMode::Span)),
+      SettingsMessage::WallpaperSync(WallpaperSyncMessage::OutputMode(OutputMode::Primary)),
     );
     assert!(saved(&effects));
-    assert_eq!(app.settings.wallpaper_sync.output_mode, OutputMode::Span);
+    assert_eq!(app.settings.wallpaper_sync.output_mode, OutputMode::Primary);
 
     send(
       &mut app,
@@ -1928,7 +1928,7 @@ mod tests {
       SettingsMessage::WallpaperSync(WallpaperSyncMessage::Reset),
     );
     assert!(app.settings.wallpaper_sync.enabled);
-    assert_eq!(app.settings.wallpaper_sync.output_mode, OutputMode::Primary);
+    assert_eq!(app.settings.wallpaper_sync.output_mode, OutputMode::Span);
     assert!((app.settings.wallpaper_sync.brightness - 0.6).abs() < 1e-6);
   }
 

@@ -132,22 +132,22 @@ impl Default for WallpaperSyncConfig {
   fn default() -> Self {
     Self {
       enabled: false,
-      output_mode: OutputMode::Primary,
+      output_mode: OutputMode::Span,
       force_fill_style: true,
       quality_px: 50,
       blur_px: 100,
-      blur_ref_width: 544,
-      glow_size_percent: 70,
+      blur_ref_width: 1920,
+      glow_size_percent: 100,
       glow_opacity: 1.0,
-      color_mix_ratio: 70,
+      color_mix_ratio: 50,
       luminosity_cap: 0.5,
       darken_step: 0.9,
       brightness: 0.6,
-      gradient_height: 180,
-      dither: 0.8,
+      gradient_height: 0,
+      dither: 0.0,
       transition_enabled: true,
-      transition_duration: 1.5,
-      transition_fps: 60,
+      transition_duration: 1.0,
+      transition_fps: 120,
       transition_easing: TransitionEasing::Smoothstep,
       transition_anchor: TransitionAnchor::Center,
       transition_arm_lead: 0.35,
@@ -248,19 +248,19 @@ mod tests {
   fn defaults_match_wallpaper_sync_mod() {
     let cfg = WallpaperSyncConfig::default();
     assert!(!cfg.enabled);
-    assert_eq!(cfg.output_mode, OutputMode::Primary);
+    assert_eq!(cfg.output_mode, OutputMode::Span);
     assert!(cfg.force_fill_style);
     assert_eq!(cfg.quality_px, 50);
     assert_eq!(cfg.blur_px, 100);
-    assert_eq!(cfg.blur_ref_width, 544);
-    assert_eq!(cfg.glow_size_percent, 70);
-    assert_eq!(cfg.color_mix_ratio, 70);
+    assert_eq!(cfg.blur_ref_width, 1920);
+    assert_eq!(cfg.glow_size_percent, 100);
+    assert_eq!(cfg.color_mix_ratio, 50);
     assert!((cfg.brightness - 0.6).abs() < f32::EPSILON);
-    assert_eq!(cfg.gradient_height, 180);
-    assert!((cfg.dither - 0.8).abs() < f32::EPSILON);
+    assert_eq!(cfg.gradient_height, 0);
+    assert!(cfg.dither.abs() < f32::EPSILON);
     assert!(cfg.transition_enabled);
-    assert!((cfg.transition_duration - 1.5).abs() < f32::EPSILON);
-    assert_eq!(cfg.transition_fps, 60);
+    assert!((cfg.transition_duration - 1.0).abs() < f32::EPSILON);
+    assert_eq!(cfg.transition_fps, 120);
     assert_eq!(cfg.transition_easing, TransitionEasing::Smoothstep);
     assert_eq!(cfg.transition_anchor, TransitionAnchor::Center);
     assert!(!cfg.skip_when_obscured);
@@ -276,7 +276,7 @@ mod tests {
   fn serde_roundtrip_and_partial_deserialization_preserve_defaults() {
     let mut cfg = WallpaperSyncConfig {
       enabled: true,
-      output_mode: OutputMode::Span,
+      output_mode: OutputMode::Primary,
       color_mix_ratio: 40,
       ..WallpaperSyncConfig::default()
     };
@@ -287,13 +287,13 @@ mod tests {
     let partial: WallpaperSyncConfig =
       serde_json::from_str(r#"{"enabled":true}"#).expect("partial");
     assert!(partial.enabled);
-    assert_eq!(partial.blur_ref_width, 544);
+    assert_eq!(partial.blur_ref_width, 1920);
     assert!(partial.restore_on_stop);
 
     cfg.reset_options();
     assert!(cfg.enabled);
-    assert_eq!(cfg.output_mode, OutputMode::Primary);
-    assert_eq!(cfg.color_mix_ratio, 70);
+    assert_eq!(cfg.output_mode, OutputMode::Span);
+    assert_eq!(cfg.color_mix_ratio, 50);
   }
 
   #[test]

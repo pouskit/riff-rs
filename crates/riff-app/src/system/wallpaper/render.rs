@@ -802,4 +802,37 @@ mod tests {
     assert_eq!(&bmp[54..58], &[60, 50, 40, 0]);
     assert_eq!(&bmp[58..62], &[30, 20, 10, 0]);
   }
+
+  #[test]
+  fn default_preset_preserves_spatial_color_variation() {
+    // High-contrast 4-quadrant cover (purple, teal, gold, magenta) rendered at 320x180.
+    let mut cover = RgbImage::new(64, 64);
+    for y in 0..64u32 {
+      for x in 0..64u32 {
+        let idx = (y as usize * 64 + x as usize) * 3;
+        let rgb = match (x < 32, y < 32) {
+          (true, true) => [90, 40, 200],
+          (false, true) => [20, 180, 190],
+          (true, false) => [230, 140, 40],
+          (false, false) => [210, 50, 140],
+        };
+        cover.data[idx..idx + 3].copy_from_slice(&rgb);
+      }
+    }
+    let params = WallpaperSyncConfig::default().render_params();
+    let out = render_single(&cover, 320, 180, &params);
+    let mut min_c = [255u8; 3];
+    let mut max_c = [0u8; 3];
+    for px in out.data.as_chunks::<3>().0 {
+      for c in 0..3 {
+        min_c[c] = min_c[c].min(px[c]);
+        max_c[c] = max_c[c].max(px[c]);
+      }
+    }
+    let span = (0..3).map(|c| max_c[c] - min_c[c]).max().unwrap_or(0);
+    assert!(
+      span >= 20,
+      "expected visible spatial variation, got span={span}"
+    );
+  }
 }
