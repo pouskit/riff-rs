@@ -10,6 +10,14 @@ version = "1.0.0"
 
 [workspace.lints.clippy]
 
+# Debug réduit : les fichiers .pdb complets (environ 700 Mo par exécutable) dominaient le temps d'édition de liens.
+# Les numéros de ligne restent dans les paniques et les traces ; les dépendances n'ont aucune info de debug.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "fat"
 codegen-units = 1
