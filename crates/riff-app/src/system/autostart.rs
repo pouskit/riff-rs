@@ -53,6 +53,7 @@ fn exe_of(command: &str) -> &str {
 }
 
 /// Premier octet de la valeur binaire `StartupApproved` : bit 0 levé (03, 07) pour une entrée désactivée.
+#[cfg(any(windows, test))]
 fn disabled_by_windows(data: &[u8]) -> bool {
   data.first().is_some_and(|byte| byte & 1 == 1)
 }

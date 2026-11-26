@@ -23,13 +23,16 @@ fn proxy_params(url: &str) -> Params {
 
 #[test]
 fn downloads_dir_is_the_configured_folder_and_exists() {
+  // `root` d'abord : il réserve le dossier partagé pour ce fil, sinon un autre test peut le recréer entre-temps.
+  let root = root();
   let dir = downloads_dir();
-  assert_eq!(dir, root().join("downloads"));
+  assert_eq!(dir, root.join("downloads"));
   assert!(dir.is_dir());
 }
 
 #[tokio::test]
 async fn downloaded_track_serves_a_file_and_honours_ranges() {
+  root();
   let dir = downloads_dir();
   std::fs::write(dir.join("pb_track.mp3"), (0..100u8).collect::<Vec<_>>()).expect("fichier");
   let full = downloaded_track(query(&[("name", "pb_track.mp3")])).await;
