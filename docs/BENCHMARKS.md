@@ -299,6 +299,19 @@ Même titre pour les deux programmes, 60 s de relevés, fenêtre 1280 x 800, cop
 
 Réserves notées : une série précédente de riff-rs donnait 0 / 6,3 / 12,6 / 7,6 / 0 / 14,1 pour les mêmes scènes ; une autre session tournait sur la machine pendant une partie des mesures ; Riff anime sa barre de progression ondulée et ses transitions, absentes de riff-rs ; le temps GPU n'est pas compté. RAM de riff-rs : accueil 152,0 Mo, scène a 148,5 Mo, scène e 152,4 Mo, plein écran 150,6 Mo, mesh 160,0 Mo, mini-paroles 156,0 Mo. Cette série note aussi un défaut du pilote AMD, un cœur occupé en continu sans image présentée, déjà présent dans la série précédente.
 
+### Vulkan contre DX12 (2026-11-26)
+
+Commit `4569ce9`, release (`lto = "fat"`), RX 7800 XT. A/B alterné en 2 tours (`methode/prof/ab-wgpu.ps1`, hors dépôt, appelle `bench.ps1 -Only ram-idle,startup`) : DX12 par défaut contre `WGPU_BACKEND=vulkan`. 4 lancements au repos (attente 30 s, CPU sur 15 s) et 6 démarrages par version.
+
+| Mesure | DX12 | Vulkan |
+|---|---|---|
+| RAM privée au repos | 110,8 Mo (110,2 à 111,1) | 130,6 Mo (127,9 à 131,8) |
+| Commit privé au repos | 211,6 Mo (205,2 à 212,8) | 299,1 Mo (295,4 à 300,9) |
+| CPU au repos, par lancement | 0 / 0 / 0,1 / 0 % | 0,1 / 99,5 / 0,1 / 99,4 % |
+| Démarrage (médiane) | 383 ms | 297 ms |
+
+En Vulkan, `amdvlk64.dll` est chargé et un cœur reste à 100 % dans 2 lancements sur 4 malgré `DRIVER_WARMUP_FRAMES = 240`. DX12 reste le backend forcé (`main.rs`). La RAM au repos en DX12 (110,8 Mo) dépasse le seuil de 105 Mo, contre 95,4 Mo sur `634fd15` : cause non cherchée.
+
 ### RAM et CPU au repos (commité le 2026-11-11)
 
 Commit mesuré `634fd15`, release, DX12 par défaut, données isolées. RAM privée au repos, accueil vide, 1 processus : 97,0 / 95,2 / 95,4 / 94,9 / 97,4 Mo, médiane 95,4 Mo (94,9 à 97,4). Références : `2b68a68` 98,7 Mo (93,5 à 100,1), base précédente 98,6 Mo (93,2 à 99,1). CPU au repos : 0,00 / 0,10 / 0,00 % d'un cœur sur 15 s. Seuils : 105 Mo et 2 %.
