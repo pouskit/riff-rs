@@ -21,3 +21,9 @@ debug = false
 [profile.release]
 lto = "fat"
 codegen-units = 1
+
+# Binaires de test et de mesure locaux : `lto = "fat"` reste réservé aux releases publiées.
+[profile.release-local]
+inherits = "release"
+lto = "thin"
+codegen-units = 16

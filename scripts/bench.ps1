@@ -242,6 +242,8 @@ $labels = [ordered]@{
   'size-exe'       = 'Taille de l''ex' + [char]0x00E9 + 'cutable'
   'size-installer' = 'Taille de l''installeur'
   'ram-idle'       = 'RAM au repos (m' + [char]0x00E9 + 'diane)'
+  'idle-commit'    = 'Commit priv' + [char]0x00E9 + ' au repos (m' + [char]0x00E9 + 'diane)'
+  'idle-cpu'       = 'CPU au repos (m' + [char]0x00E9 + 'diane)'
   'startup'        = 'D' + [char]0x00E9 + 'marrage jusqu''au premier rendu'
   'ram-play'       = 'RAM en lecture (' + $PlaySeconds + ' s)'
   'search'         = 'Temps de recherche (m' + [char]0x00E9 + 'diane)'
@@ -276,7 +278,7 @@ function New-MarkdownTable {
   $rows.Add("| Mesure | $riffHead | riff-rs ($($script:meta.rs.version)) | M" + [char]0x00E9 + 'thode |')
   $rows.Add('|---|---|---|---|')
   $keys = @($script:results | ForEach-Object { $_.measure } | Select-Object -Unique)
-  $first = @('size-install', 'size-exe', 'size-installer', 'ram-idle', 'startup', 'ram-play')
+  $first = @('size-install', 'size-exe', 'size-installer', 'ram-idle', 'idle-commit', 'idle-cpu', 'startup', 'ram-play')
   $order = $first + @($keys | Where-Object { $_ -like 'cpu-*' }) + @('search', 'search-uncached', 'scroll', 'latency', 'latency-online') + @($keys | Where-Object { $first -notcontains $_ -and $_ -notlike 'cpu-*' -and @('search', 'search-uncached', 'scroll', 'latency', 'latency-online') -notcontains $_ })
   foreach ($key in $order) {
     $entries = @($script:results | Where-Object { $_.measure -eq $key })
@@ -360,6 +362,10 @@ function Measure-RamIdle {
       $values = [double[]]@($rows | ForEach-Object { [double]::Parse($_.MedianMB, $culture) })
       $procs = ($rows | ForEach-Object { $_.Processes }) -join '/'
       Add-Result 'ram-idle' $app 'Mo' $values (Get-Median $values) $method "processus par lancement : $procs"
+      $commits = [double[]]@($rows | ForEach-Object { [double]::Parse($_.CommitMB, $culture) })
+      Add-Result 'idle-commit' $app 'Mo' $commits (Get-Median $commits) "Somme du commit priv$([char]0x00E9) (PrivateMemorySize64) de l'arbre, m$([char]0x00EA)mes lancements que la RAM au repos."
+      $cpus = [double[]]@($rows | ForEach-Object { [double]::Parse($_.CpuPct, $culture) })
+      Add-Result 'idle-cpu' $app '% d''un coeur' $cpus (Get-Median $cpus) "Temps CPU de l'arbre sur 15 s apr$([char]0x00E8)s l'attente, m$([char]0x00EA)mes lancements que la RAM au repos, 100 % = un c$([char]0x0153)ur logique."
     }
   }
 }

@@ -1,4 +1,5 @@
-# Measures the idle RAM of a program: Private Working Set summed over its process tree.
+# Measures the idle RAM of a program: Private Working Set summed over its process tree. Also gives the private commit
+# (PrivateMemorySize64, summed, median of the samples) and the idle CPU (tree CPU time over -CpuSeconds, 100 % = one core).
 # Method: NOTES.md, section "Etat fin Phase 6". Compatible with Windows PowerShell 5.1.
 #
 #   .\scripts\measure.ps1 -Command notepad.exe
@@ -12,6 +13,8 @@ param(
   [int]$WaitSeconds = 30,
   [int]$Samples = 3,
   [int]$SampleIntervalSeconds = 2,
+  # Idle CPU window, starting after -WaitSeconds; covers the samples (at least their duration).
+  [int]$CpuSeconds = 15,
   [string]$CsvPath = ''
 )
 
@@ -55,6 +58,23 @@ function Get-TreePrivateWorkingSet([int[]]$Ids) {
   return $sum
 }
 
+function Get-TreeCommit([int[]]$Ids) {
+  $sum = [double]0
+  foreach ($id in $Ids) {
+    try { $sum += [double](Get-Process -Id $id -ErrorAction Stop).PrivateMemorySize64 } catch { Write-Verbose "pid $id gone" }
+  }
+  return $sum
+}
+
+# Process times of the tree in seconds (kernel + user). A process gone during the window drops out of the sum.
+function Get-TreeCpuSeconds([int[]]$Ids) {
+  $sum = [double]0
+  foreach ($id in $Ids) {
+    try { $sum += (Get-Process -Id $id -ErrorAction Stop).TotalProcessorTime.TotalSeconds } catch { Write-Verbose "pid $id gone" }
+  }
+  return $sum
+}
+
 function Stop-Tree([int[]]$Ids) {
   foreach ($id in $Ids) {
     try { Stop-Process -Id $id -Force -ErrorAction Stop } catch { Write-Verbose "pid $id already gone" }
@@ -75,14 +95,22 @@ for ($run = 1; $run -le $Runs; $run++) {
     Start-Sleep -Seconds $WaitSeconds
 
     $values = New-Object 'System.Collections.Generic.List[double]'
+    $commits = New-Object 'System.Collections.Generic.List[double]'
     $count = 0
+    $cpuIds = @(Get-ProcessTree $rootId $launchedAt)
+    $cpuStart = Get-TreeCpuSeconds $cpuIds
+    $clock = [Diagnostics.Stopwatch]::StartNew()
     for ($sample = 0; $sample -lt $Samples; $sample++) {
       if ($sample -gt 0) { Start-Sleep -Seconds $SampleIntervalSeconds }
       $ids = @(Get-ProcessTree $rootId $launchedAt)
       if ($ids.Count -eq 0) { throw "process tree of $rootId exited before the measurement" }
       $count = $ids.Count
       $values.Add((Get-TreePrivateWorkingSet $ids) / 1MB)
+      $commits.Add((Get-TreeCommit $ids) / 1MB)
     }
+    $left = $CpuSeconds - $clock.Elapsed.TotalSeconds
+    if ($left -gt 0) { Start-Sleep -Milliseconds ([int]($left * 1000)) }
+    $cpuPct = 100 * ((Get-TreeCpuSeconds $cpuIds) - $cpuStart) / $clock.Elapsed.TotalSeconds
 
     $median = Get-Median $values.ToArray()
     $results.Add([pscustomobject]@{
@@ -90,8 +118,10 @@ for ($run = 1; $run -le $Runs; $run++) {
         Processes = $count
         Samples   = (($values | ForEach-Object { '{0:N1}' -f $_ }) -join ' / ')
         MedianMB  = [math]::Round($median, 1)
+        CommitMB  = [math]::Round((Get-Median $commits.ToArray()), 1)
+        CpuPct    = [math]::Round($cpuPct, 2)
       })
-    Write-Host ("run {0}/{1}: {2:N1} MB ({3} process(es)), samples {4}" -f $run, $Runs, $median, $count, $results[-1].Samples)
+    Write-Host ("run {0}/{1}: {2:N1} MB ({3} process(es)), samples {4}, commit {5:N1} MB, CPU {6:N2} %" -f $run, $Runs, $median, $count, $results[-1].Samples, $results[-1].CommitMB, $results[-1].CpuPct)
   }
   finally {
     Stop-Tree @(Get-ProcessTree $rootId $launchedAt)
