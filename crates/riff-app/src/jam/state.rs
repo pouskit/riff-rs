@@ -1,7 +1,8 @@
 //! État du jam côté `App` : file parallèle, participants, compteurs de l'hôte, miroir de l'invité.
 
-use super::protocol::{Participant, PlaybackState};
+use super::protocol::{Participant, PlaybackState, SharedSound};
 use super::{Role, protocol};
+use crate::audio_prefs::Sound;
 use crate::player::PlayerState;
 use std::time::Instant;
 
@@ -30,6 +31,8 @@ pub struct Sent {
   pub playing: bool,
   pub shuffle: bool,
   pub repeat: bool,
+  /// Compteur des effets partagés : un changement d'effets renvoie une nouvelle ancre de position.
+  pub sv: u64,
 }
 
 /// Dernier état de l'hôte reçu par l'invité, avec l'instant local de `at_ms`.
@@ -69,7 +72,16 @@ pub struct JamState {
   pub pending_fade: bool,
   /// Battement : diffuse l'état même sans changement.
   pub force: bool,
+  // Les deux.
+  /// Son personnel d'avant le jam, capturé à l'entrée (une reconnexion ne l'écrase pas) et rendu à la sortie.
+  /// Volume et égaliseur y suivent les curseurs locaux ; les champs partagés restent ceux d'avant le jam.
+  pub personal: Option<Sound>,
+  /// Effets du jam. Hôte : l'état qui fait foi. Invité : le dernier état appliqué.
+  pub shared: Option<SharedSound>,
   // Invité.
+  /// Identifiant de la dernière commande `Sound` envoyée et pas encore acquittée : les états reçus sont
+  /// ignorés tant qu'elle n'est pas revenue.
+  pub sound_pending: Option<u64>,
   pub host: Option<HostView>,
   pub saved: Option<Box<Saved>>,
   pub last_correction: Option<Instant>,
@@ -106,6 +118,9 @@ impl JamState {
       failures: 0,
       pending_fade: false,
       force: false,
+      personal: None,
+      shared: None,
+      sound_pending: None,
       host: None,
       saved: None,
       last_correction: None,

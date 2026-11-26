@@ -35,6 +35,7 @@ pub const UI_KEYS: &[&str] = &[
   "Display saved albums in the sidebar and album page",
   "Automatically add all tracks of an album to favorites when saving it",
   "Blocked items are hidden from recommendations and auto-skipped",
+  "All these tracks are blocked",
   "Automatically save High Quality, effects and the active preset",
   "How the active line moves",
   "Preferred lyrics provider with automatic fallback",
@@ -270,8 +271,17 @@ pub const UI_KEYS: &[&str] = &[
   "Save sound settings",
   "Discord RPC",
   "Reconnect",
-  "Show artist in Discord status",
-  "Display \"Listening to Artist\" instead of \"Listening to Riff\" in compact profile status",
+  "Discord status",
+  "Discord time",
+  "Discord cover",
+  "Show when paused",
+  "Album on cover hover",
+  "Track",
+  "Track - Artist",
+  "Progress bar",
+  "Elapsed",
+  "Hidden",
+  "Paused",
   "Show dynamic ambient color gradients behind interface panels",
   "Update check",
   "Adds a button that asks GitHub for the latest release. Nothing is sent and nothing is checked on its own.",
@@ -704,9 +714,13 @@ pub const UI_KEYS: &[&str] = &[
   "Couldn't play this track, waiting for the next one",
   "You joined {name}'s Jam",
   "The host ended the Jam",
+  "The Jam ended because everyone else left",
   "Connection to the Jam was lost",
   "Invalid invite code",
   "Wrong or expired invite code",
+  "Code not found or the Jam ended",
+  "Code expired, or check your system clock",
+  "Jam code compromised, a new code was generated",
   "This Jam is full",
   "This Jam uses another version of Riff",
   "Could not start the Jam",
@@ -716,9 +730,15 @@ pub const UI_KEYS: &[&str] = &[
   "{count} tracks over the limit were skipped",
   "The Jam queue is full",
   "Not available during a Jam",
+  "Effects are shared in the Jam",
+  "Set by {name}",
+  "Only for you",
   "Jam relay URL",
   "Leave empty to use the default encrypted relays",
+  "Jam rendezvous URL",
+  "Leave empty to use the default server that resolves Jam codes",
   "Invalid relay URL, using the default relays",
+  "Invalid rendezvous URL, short codes are unavailable",
 ];
 
 const ENGLISH: &str = "en";
@@ -972,6 +992,21 @@ mod tests {
   }
 
   #[test]
+  fn blocking_labels_are_translated() {
+    let keys = ["All these tracks are blocked"];
+    for lang in ["fr", "ru", "uk"] {
+      let i18n = I18n::load(lang, &empty_cache());
+      for key in keys {
+        assert!(UI_KEYS.contains(&key), "{key} absent de UI_KEYS");
+        assert!(
+          i18n.translated(key).is_some(),
+          "{key} non traduit en {lang}"
+        );
+      }
+    }
+  }
+
+  #[test]
   fn jam_labels_are_translated() {
     let keys = [
       "Jam",
@@ -989,10 +1024,48 @@ mod tests {
       "{name} joined the Jam",
       "{name} added {count} tracks",
       "You joined {name}'s Jam",
+      "The Jam ended because everyone else left",
       "Wrong or expired invite code",
+      "Code not found or the Jam ended",
+      "Code expired, or check your system clock",
+      "Invalid relay URL, using the default relays",
+      "Invalid rendezvous URL, short codes are unavailable",
+      "Jam code compromised, a new code was generated",
       "Local files can't be played in a Jam",
+      "Effects are shared in the Jam",
+      "Set by {name}",
+      "Only for you",
       "Jam relay URL",
       "Leave empty to use the default encrypted relays",
+      "Jam rendezvous URL",
+      "Leave empty to use the default server that resolves Jam codes",
+    ];
+    for lang in ["fr", "ru", "uk"] {
+      let i18n = I18n::load(lang, &empty_cache());
+      for key in keys {
+        assert!(UI_KEYS.contains(&key), "{key} absent de UI_KEYS");
+        assert!(
+          i18n.translated(key).is_some(),
+          "{key} non traduit en {lang}"
+        );
+      }
+    }
+  }
+
+  #[test]
+  fn discord_labels_are_translated() {
+    let keys = [
+      "Discord status",
+      "Discord time",
+      "Discord cover",
+      "Show when paused",
+      "Album on cover hover",
+      "Track",
+      "Track - Artist",
+      "Progress bar",
+      "Elapsed",
+      "Hidden",
+      "Paused",
     ];
     for lang in ["fr", "ru", "uk"] {
       let i18n = I18n::load(lang, &empty_cache());

@@ -13,9 +13,8 @@ use std::time::Duration;
 
 /// Clé publique minisign de la release, ligne en base64 de `minisign.pub` (la seconde ligne du fichier).
 ///
-/// PROVISOIRE : aucune clé de production n'existe encore. Vide, elle fait refuser toute mise à jour
-/// (`VerifyError::KeyNotConfigured`). À remplacer par le mainteneur selon `docs/RELEASING.md`.
-pub const UPDATE_PUBLIC_KEY: &str = "";
+/// Clé de production (identifiant `4050AF6BFAC3CAB6`). Rotation : `docs/RELEASING.md`, section 7.
+pub const UPDATE_PUBLIC_KEY: &str = "RWS2ysP6a69QQLKW8yDdKFIIqLhWD4sA3kmQcRIvplPK82OFXw4lf3SR";
 
 /// Fichier de sommes joint à la release : lignes `<sha256 hexadécimal>  <nom du fichier>` (sortie de `sha256sum`).
 pub const CHECKSUMS_NAME: &str = "SHA256SUMS";
@@ -530,13 +529,13 @@ mod tests {
   }
 
   #[test]
-  fn the_provisional_production_key_refuses_everything() {
-    assert_eq!(UPDATE_PUBLIC_KEY, "", "clé de production à remplacer");
+  fn the_production_key_decodes_and_refuses_test_signatures() {
+    assert!(PublicKey::from_base64(UPDATE_PUBLIC_KEY).is_ok());
     let good = sums(PAYLOAD, NAME);
-    // Même une signature et une somme parfaites, d'une clé de test, sont refusées.
+    // Une signature et une somme parfaites, mais d'une clé de test, sont refusées par la clé de production.
     assert_eq!(
       check(PAYLOAD, Some(SIG_A), Some(&good), UPDATE_PUBLIC_KEY),
-      Err(VerifyError::KeyNotConfigured)
+      Err(VerifyError::SignatureRejected)
     );
     assert_eq!(
       check(PAYLOAD, Some(SIG_A), Some(&good), "pas une clé"),
@@ -735,7 +734,13 @@ mod tests {
     let result = fetch_verified(&Http::local(), &base, version, &dir, &key(KEY_A), |_| {}).await;
     assert_eq!(result, Err(VerifyError::ChecksumMissing.into()));
 
-    // Clé provisoire : tout est refusé, même une release parfaite.
+    // Clé vide : tout est refusé, même une release parfaite.
+    let base = serve(release_files(version, PAYLOAD, Some(SIG_A), &good_sums)).await;
+    let result = fetch_verified(&Http::local(), &base, version, &dir, "", |_| {}).await;
+    assert_eq!(result, Err(VerifyError::KeyNotConfigured.into()));
+    assert!(!dir.exists());
+
+    // Clé de production : une release signée par une clé de test est refusée.
     let base = serve(release_files(version, PAYLOAD, Some(SIG_A), &good_sums)).await;
     let result = fetch_verified(
       &Http::local(),
@@ -746,7 +751,7 @@ mod tests {
       |_| {},
     )
     .await;
-    assert_eq!(result, Err(VerifyError::KeyNotConfigured.into()));
+    assert_eq!(result, Err(VerifyError::SignatureRejected.into()));
     assert!(!dir.exists());
   }
 

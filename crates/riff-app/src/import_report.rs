@@ -2,7 +2,7 @@
 //!
 //! Logique pure : rien n'est écrit ici (ni fichier natif, ni coffre). Le rapport ne contient que des noms de clés.
 
-use crate::settings::{LegacyStorage, NativeSettings, UI_SCALE_RANGE};
+use crate::settings::{DiscordStatus, DiscordTime, LegacyStorage, NativeSettings, UI_SCALE_RANGE};
 use crate::user_data::UserData;
 use material_colors::color::Rgb;
 use riff_core::secrets::SecretName;
@@ -302,6 +302,8 @@ fn is_invalid(key: &str, value: &Value) -> bool {
       .is_ok_and(|v| (UI_SCALE_RANGE.0..=UI_SCALE_RANGE.1).contains(&v)),
     "riff_home_layout" => !matches!(text, "spotify" | "riff"),
     "riff_platform" => !matches!(text, "ytmusic" | "soundcloud"),
+    "riff_rs_discord_status" => DiscordStatus::parse(text).is_none(),
+    "riff_rs_discord_time" => DiscordTime::parse(text).is_none(),
     "riff_volume" => !text.trim().parse::<f32>().is_ok_and(f32::is_finite),
     "riff_user_nickname" => text.trim().is_empty(),
     _ => false,
@@ -622,6 +624,17 @@ mod tests {
     assert_eq!(report.unknown, ["riff_cle_inconnue"]);
     let shown = format!("{report:?}");
     assert!(!shown.contains("VALEUR"), "{shown}");
+  }
+
+  #[test]
+  fn an_unknown_discord_mode_is_reported_invalid() {
+    let report = ImportReport::new(&storage_of(
+      r#"{ "riff_rs_discord_status": "track", "riff_rs_discord_time": "remaining" }"#,
+    ));
+    assert_eq!(report.imported, ["riff_rs_discord_status"]);
+    assert_eq!(report.invalid, ["riff_rs_discord_time"]);
+    let report = ImportReport::new(&storage_of(r#"{ "riff_rs_discord_status": "album" }"#));
+    assert_eq!(report.invalid, ["riff_rs_discord_status"]);
   }
 
   #[test]

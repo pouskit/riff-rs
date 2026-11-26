@@ -1,6 +1,6 @@
 # Services tiers
 
-Riff n'a aucun serveur à lui. Il contacte les services ci-dessous, uniquement dans les cas décrits dans [PRIVACY.md](PRIVACY.md). Les hôtes autorisés sont fixés dans le code (`crates/riff-core/src/net/allowlist.rs`) : une requête vers un autre hôte est refusée. Exception : le Jam ne passe pas par ce filtre. Ses connexions (QUIC vers les autres participants et vers le relais) sont faites par la crate `iroh`, seulement pendant un jam.
+Riff n'a aucun serveur à lui. Il contacte les services ci-dessous, uniquement dans les cas décrits dans [PRIVACY.md](PRIVACY.md). Les hôtes autorisés sont fixés dans le code (`crates/riff-core/src/net/allowlist.rs`) : une requête vers un autre hôte est refusée. Exception : le Jam ne passe pas par ce filtre. Ses connexions (QUIC vers les autres participants et vers le relais, HTTPS vers le serveur de rendez-vous) sont faites par la crate `iroh`, seulement pendant un jam.
 
 **La licence MIT couvre le code de ce dépôt, pas les conditions d'utilisation de ces services : l'utilisateur reste responsable de son usage.** Les noms de services et de marques appartiennent à leurs propriétaires ; Riff n'est affilié à aucun d'eux. Plusieurs services (YouTube, SoundCloud, Spotify, Kugou, NetEase, Musixmatch) sont interrogés par des interfaces publiques non documentées ou celles de leurs pages web : elles peuvent changer ou cesser de fonctionner sans préavis.
 
@@ -27,6 +27,7 @@ Riff n'a aucun serveur à lui. Il contacte les services ci-dessous, uniquement d
 | GitHub | Téléchargement de `yt-dlp` et ffmpeg, vérification de mise à jour de l'application | `github.com`, `objects.githubusercontent.com`, `release-assets.githubusercontent.com`, `api.github.com` |
 | Discord | Rich Presence, via le client Discord local (tube nommé, pas de réseau) | aucun |
 | n0 (relais iroh) | Jam : relais chiffré quand la connexion directe entre participants échoue, et découverte de l'adresse publique, seulement pendant un jam | `use1-1.relay.n0.iroh.link`, `usw1-1.relay.n0.iroh.link`, `euc1-1.relay.n0.iroh.link`, `aps1-1.relay.n0.iroh.link`, ou le relais configuré |
+| n0 (rendez-vous pkarr) | Jam : le code à 6 caractères mène à un paquet signé et chiffré (adresse de l'hôte) publié sur ce serveur, lu par les invités ; l'hôte le republie toutes les 60 s et l'annule à la fin du jam. Il voit les adresses IP, les heures, une clé publique dérivée du code et un contenu chiffré. Sans garantie de service ; le réglage « Jam rendezvous URL » le remplace par un serveur pkarr auto-hébergé | `dns.iroh.link`, ou l'URL configurée |
 | Routeur local | Jam : demande de redirection de port temporaire (UPnP, NAT-PMP, PCP) pour faciliter la connexion directe, seulement pendant un jam, sans trafic hors du réseau local | aucun (passerelle du réseau local) |
 
 `yt-dlp` et ffmpeg font aussi leur propre trafic réseau, hors de cette liste : `yt-dlp` contacte les sites de lecture (YouTube, SoundCloud, etc.) pour résoudre et télécharger les flux. Riff ne lui transmet que des adresses acceptées par son filtre de services ; une redirection décidée par le site n'est pas filtrée.

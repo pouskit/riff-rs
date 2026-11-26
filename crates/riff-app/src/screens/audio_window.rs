@@ -377,14 +377,62 @@ fn slider_item(
   label: &str,
   field: SoundField,
 ) -> Element<'static, Message> {
+  titled_slider_item(roles, app, app.i18n.t(label), field)
+}
+
+/// Comme `slider_item`, avec un titre déjà traduit.
+fn titled_slider_item(
+  roles: Roles,
+  app: &App,
+  title: String,
+  field: SoundField,
+) -> Element<'static, Message> {
   let value = shown(field, app.sound_value(field));
   item(
     column![
-      head(roles, app.i18n.t(label), value, roles.on_surface),
+      head(roles, title, value, roles.on_surface),
       sound_slider(roles, app, field)
     ]
     .spacing(t::ITEM_GAP),
     t::ITEM_PADDING_Y,
+  )
+}
+
+/// Note d'un jam en haut d'un onglet : les effets sont partagés (et qui les a réglés), ou restent personnels.
+fn jam_note(roles: Roles, app: &App) -> Option<Element<'static, Message>> {
+  let jam = app.jam.as_ref()?;
+  let note = |line: String, color: Color| -> Element<'static, Message> {
+    text(line)
+      .size(t::NAME_SIZE)
+      .font(fonts::MEDIUM)
+      .color(color)
+      .into()
+  };
+  let lines = match app.ui.audio.tab {
+    AudioTab::Tempo | AudioTab::Effects => {
+      let mut lines = vec![note(
+        app.i18n.t("Effects are shared in the Jam"),
+        roles.primary,
+      )];
+      if let Some(shared) = jam.shared.as_ref().filter(|shared| shared.sv > 0) {
+        lines.push(note(
+          app
+            .i18n
+            .t("Set by {name}")
+            .replace("{name}", &jam.name_of(shared.by)),
+          roles.variant,
+        ));
+      }
+      lines
+    }
+    AudioTab::Equalizer => vec![note(app.i18n.t("Only for you"), roles.variant)],
+    _ => return None,
+  };
+  Some(
+    container(Column::with_children(lines).spacing(t::ITEM_GAP))
+      .width(Fill)
+      .padding(Padding::from([0.0, t::ITEM_PADDING_X]))
+      .into(),
   )
 }
 
@@ -636,6 +684,15 @@ fn bool_row(
   )
 }
 
+/// Gain de volume : personnel, même en jam (il y porte la mention).
+fn volume_item(roles: Roles, app: &App) -> Element<'static, Message> {
+  let mut title = app.i18n.t("Volume gain");
+  if app.jam.is_some() {
+    title = format!("{title} - {}", app.i18n.t("Only for you"));
+  }
+  titled_slider_item(roles, app, title, SoundField::Volume)
+}
+
 fn tempo(roles: Roles, app: &App) -> Element<'static, Message> {
   setting_panel(
     roles,
@@ -644,7 +701,7 @@ fn tempo(roles: Roles, app: &App) -> Element<'static, Message> {
       slider_item(roles, app, "Speed", SoundField::Speed),
       slider_item(roles, app, "Speed (pitch)", SoundField::SpeedPitch),
       slider_item(roles, app, "Pitch", SoundField::Pitch),
-      slider_item(roles, app, "Volume gain", SoundField::Volume),
+      volume_item(roles, app),
     ],
     t::PANEL_GAP,
   )
@@ -908,9 +965,9 @@ fn sleep(roles: Roles, app: &App) -> Element<'static, Message> {
 
 /// Préréglages (Riff les range dans le tiroir de la barre latérale, `index.html:538`).
 fn presets(roles: Roles, app: &App) -> Element<'static, Message> {
-  let active = &app.settings.sound.active_preset;
+  let active = app.active_preset();
   let chips = app.all_presets().into_iter().map(|preset| {
-    let selected = &preset.id == active;
+    let selected = preset.id == active;
     let is_custom = app
       .settings
       .sound
@@ -1148,6 +1205,13 @@ fn card(app: &App, pose: Option<AudioPose>) -> Element<'_, Message> {
     AudioTab::Equalizer => equalizer(roles, app),
     AudioTab::Sleep => sleep(roles, app),
     AudioTab::Output => output(roles, app),
+  };
+  let panel = match jam_note(roles, app) {
+    Some(note) => column![note, panel]
+      .spacing(t::PANEL_GAP)
+      .width(Fill)
+      .into(),
+    None => panel,
   };
   let panel = animated(panel, app.ui.audio.motion.panel_pose(app.now), roles.high);
   let body = scrollable(container(panel).width(Fill).padding(Padding {

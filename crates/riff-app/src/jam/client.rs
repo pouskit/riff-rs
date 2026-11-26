@@ -2,7 +2,7 @@
 
 use super::protocol::{self, ClientMsg, DecodeError, HostMsg, MAX_FRAME, RateLimit, Refusal};
 use super::sync::{self, ClockSync};
-use super::transport::{Dialer, Target, Transport, TransportError};
+use super::transport::{Dialer, Lookup, Target, Transport, TransportError};
 use super::{
   AbortOnDrop, CLOSE_TIMEOUT, EndCause, HANDSHAKE_TIMEOUT, JamEvent, JamOut,
   MAX_HOST_FRAMES_PER_SEC, PEER_SILENCE, PING_BURST, PING_EVERY, RECONNECT_DELAYS, millis_since,
@@ -76,32 +76,66 @@ pub(super) async fn run(
   events: mpsc::UnboundedSender<JamEvent>,
   mut commands: mpsc::UnboundedReceiver<JamOut>,
 ) -> EndCause {
-  let cause = match transport.parse(&ticket) {
-    Err(_) => EndCause::InvalidTicket,
-    Ok(target) => match transport.dialer().await {
-      Err(err) => EndCause::Transport(err.to_string()),
-      Ok(dialer) => {
-        let mut guest = Guest {
-          dialer,
-          target,
-          name: protocol::sanitize_name(&name),
-          cfg,
-          epoch: Instant::now(),
-          clock: ClockSync::default(),
-          events: events.clone(),
-        };
-        let cause = guest.session(&mut commands).await;
-        guest.dialer.close().await;
-        cause
-      }
-    },
-  };
+  let cause = join(&transport, &ticket, &name, cfg, &events, &mut commands).await;
   let _ = events.send(JamEvent::Ended(cause.clone()));
   cause
 }
 
+async fn join(
+  transport: &Transport,
+  ticket: &str,
+  name: &str,
+  cfg: ClientConfig,
+  events: &mpsc::UnboundedSender<JamEvent>,
+  commands: &mut mpsc::UnboundedReceiver<JamOut>,
+) -> EndCause {
+  let Ok(lookup) = transport.classify(ticket) else {
+    return EndCause::InvalidTicket;
+  };
+  // Le point d'accès est lié avant la résolution : un code court se lit par son résolveur DNS et sa TLS.
+  let dialer = match transport.dialer().await {
+    Ok(dialer) => dialer,
+    Err(err) => return EndCause::Transport(err.to_string()),
+  };
+  let target = match interruptible(commands, dialer.resolve(&lookup)).await {
+    Some(Ok(target)) => target,
+    other => {
+      dialer.close().await;
+      return other.map_or(EndCause::Stopped, |result| match result {
+        Err(err) => resolve_cause(err),
+        Ok(_) => EndCause::Lost,
+      });
+    }
+  };
+  let mut guest = Guest {
+    dialer,
+    lookup,
+    target,
+    name: protocol::sanitize_name(name),
+    cfg,
+    epoch: Instant::now(),
+    clock: ClockSync::default(),
+    events: events.clone(),
+  };
+  let cause = guest.session(commands).await;
+  guest.dialer.close().await;
+  cause
+}
+
+/// Cause de fin quand la saisie ne mène à aucun hôte.
+fn resolve_cause(err: TransportError) -> EndCause {
+  match err {
+    TransportError::InvalidTicket => EndCause::InvalidTicket,
+    TransportError::NotFound => EndCause::CodeNotFound,
+    TransportError::Stale => EndCause::CodeStale,
+    other => EndCause::Transport(other.to_string()),
+  }
+}
+
 struct Guest {
   dialer: Dialer,
+  /// Saisie de l'invité : un code court se résout de nouveau après un échec de reconnexion.
+  lookup: Lookup,
   target: Target,
   name: String,
   cfg: ClientConfig,
@@ -145,6 +179,7 @@ async fn read_loop(
   cfg: ClientConfig,
 ) {
   let mut limit = RateLimit::new(cfg.max_frames_per_sec);
+  let mut first = true;
   loop {
     let frame = tokio::time::timeout(
       cfg.peer_silence,
@@ -158,6 +193,7 @@ async fn read_loop(
       tracing::debug!("jam: host over the frame rate limit");
       return;
     }
+    let was_first = std::mem::replace(&mut first, false);
     match protocol::decode::<HostMsg>(&body) {
       Ok(HostMsg::Unknown) => tracing::debug!("jam: unknown message ignored"),
       Ok(message) => {
@@ -167,6 +203,12 @@ async fn read_loop(
       }
       Err(DecodeError::Version(version)) => {
         tracing::debug!(version, "jam: unsupported protocol version");
+        // Réponse à notre `hello` dans une autre version : `establish` en fait un refus de version.
+        if was_first {
+          let _ = frames.send(HostMsg::Refused {
+            reason: Refusal::Version,
+          });
+        }
         return;
       }
       Err(DecodeError::Json(err)) => {
@@ -279,11 +321,14 @@ impl Guest {
     }
   }
 
-  /// Trois essais espacés par `reconnect_delays` ; `Err` porte la cause de fin.
+  /// Trois essais espacés par `reconnect_delays` ; `Err` porte la cause de fin. Un code qui ne se résout plus ne
+  /// condamne pas la cible déjà connue (code changé ou enterré par un tiers, hôte toujours là) : elle est tentée
+  /// quand même, et `CodeNotFound` n'est rendu que si tout échoue après une dernière lecture sans paquet.
   async fn reconnect(
     &mut self,
     commands: &mut mpsc::UnboundedReceiver<JamOut>,
   ) -> Result<(Session, Welcome), EndCause> {
+    let mut unresolved = None;
     for (index, delay) in self.cfg.reconnect_delays.into_iter().enumerate() {
       let attempt = u8::try_from(index + 1).unwrap_or(u8::MAX);
       self.emit(JamEvent::Reconnecting { attempt });
@@ -293,6 +338,20 @@ impl Guest {
       {
         return Err(EndCause::Stopped);
       }
+      // Un essai a déjà échoué : l'hôte a peut-être changé d'adresse ou de code, ou le jam est fini.
+      if index > 0 {
+        match interruptible(commands, self.dialer.resolve(&self.lookup)).await {
+          None => return Err(EndCause::Stopped),
+          Some(Ok(target)) => {
+            self.target = target;
+            unresolved = None;
+          }
+          Some(Err(err @ (TransportError::NotFound | TransportError::Stale))) => {
+            unresolved = Some(resolve_cause(err));
+          }
+          Some(Err(_)) => unresolved = None,
+        }
+      }
       match interruptible(commands, self.establish()).await {
         None => return Err(EndCause::Stopped),
         Some(Ok(established)) => return Ok(established),
@@ -300,7 +359,7 @@ impl Guest {
         Some(Err(_)) => {}
       }
     }
-    Err(EndCause::Lost)
+    Err(unresolved.unwrap_or(EndCause::Lost))
   }
 
   async fn run_session(

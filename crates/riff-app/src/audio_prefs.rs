@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 pub const TWEEN: Duration = Duration::from_millis(400);
 /// Pas de la transition.
 pub const TWEEN_TICK: Duration = Duration::from_millis(16);
-const DEFAULT_PRESET: &str = "p_default";
+pub(crate) const DEFAULT_PRESET: &str = "p_default";
 
 /// Bornes des curseurs de `#audio-settings-modal`.
 pub const SPEED_RANGE: (f32, f32) = (0.5, 2.0);
@@ -318,6 +318,12 @@ pub fn default_presets() -> Vec<Preset> {
       },
     ),
   ]
+}
+
+/// L'identifiant est celui d'un préréglage par défaut : seuls ceux-là ont un sens chez les autres participants d'un jam.
+#[must_use]
+pub fn is_default_preset(id: &str) -> bool {
+  default_presets().iter().any(|preset| preset.id == id)
 }
 
 /// Réglages de son de `native-settings.json`.
@@ -630,9 +636,69 @@ impl App {
     )
   }
 
-  fn persist_sound(&mut self) -> Vec<Effect> {
-    self.settings.sound.audio = self.ui.audio.live;
+  /// Son à écrire sur disque : le son personnel pendant un jam (un effet reçu du jam n'est jamais enregistré),
+  /// le son courant sinon.
+  fn personal_sound(&mut self) -> Sound {
+    let live = self.ui.audio.live;
+    match self.jam.as_mut().and_then(|jam| jam.personal.as_mut()) {
+      Some(personal) => {
+        personal.volume = live.volume;
+        personal.eq = live.eq;
+        personal.eq_bands = live.eq_bands;
+        *personal
+      }
+      None => live,
+    }
+  }
+
+  pub(crate) fn persist_sound(&mut self) -> Vec<Effect> {
+    self.settings.sound.audio = self.personal_sound();
     vec![Effect::SaveSettings(Box::new(self.settings.clone()))]
+  }
+
+  /// Amène le son courant à `target`, avec la transition de 400 ms si `smooth` et si le réglage la permet.
+  /// Rien n'est enregistré : le son d'un jam ne doit pas atteindre le disque.
+  pub(crate) fn move_sound_to(&mut self, target: Sound, smooth: bool) -> Vec<Effect> {
+    let audio = &mut self.ui.audio;
+    if audio.live == target {
+      audio.tween = None;
+      return Vec::new();
+    }
+    if audio.tween.is_some_and(|tween| tween.to == target) {
+      return Vec::new();
+    }
+    if smooth && self.settings.sound.smooth_presets {
+      audio.tween = Some(Tween {
+        from: audio.live,
+        to: target,
+        elapsed: Duration::ZERO,
+      });
+      return Vec::new();
+    }
+    audio.tween = None;
+    audio.live = target;
+    vec![Effect::AudioSound(Box::new(target.to_engine()))]
+  }
+
+  /// Son courant sans transition en cours : la valeur d'arrivée si une transition tourne.
+  pub(crate) fn settled_sound(&mut self) -> Sound {
+    if let Some(tween) = self.ui.audio.tween.take() {
+      self.ui.audio.live = tween.to;
+    }
+    self.ui.audio.live
+  }
+
+  /// Préréglage actif : celui du jam pendant un jam, celui des réglages sinon.
+  #[must_use]
+  pub fn active_preset(&self) -> &str {
+    match self.jam.as_ref() {
+      Some(jam) => jam
+        .shared
+        .as_ref()
+        .and_then(|shared| shared.preset.as_deref())
+        .unwrap_or_default(),
+      None => &self.settings.sound.active_preset,
+    }
   }
 
   fn set_sound(&mut self, field: SoundField, value: f32) -> Vec<Effect> {
@@ -642,6 +708,10 @@ impl App {
     } else {
       return Vec::new();
     };
+    if self.jam.is_some() {
+      // Le curseur personnel part de la valeur d'arrivée : jamais d'effet intermédiaire du jam.
+      self.settled_sound();
+    }
     self.ui.audio.tween = None;
     let live = &mut self.ui.audio.live;
     match field {
@@ -681,6 +751,9 @@ impl App {
     else {
       return Vec::new();
     };
+    if self.jam.is_some() {
+      return self.jam_apply_preset(&preset);
+    }
     id.clone_into(&mut self.settings.sound.active_preset);
     if self.settings.sound.smooth_presets {
       self.ui.audio.tween = Some(Tween {
@@ -746,7 +819,9 @@ impl App {
           name,
           settings: self.ui.audio.live,
         });
-        self.settings.sound.active_preset = id;
+        if self.jam.is_none() {
+          self.settings.sound.active_preset = id;
+        }
       }
     }
     self.persist_sound()
@@ -757,7 +832,9 @@ impl App {
     let sound = &mut self.settings.sound;
     sound.hq_enabled = false;
     sound.hq = Hq::default();
-    DEFAULT_PRESET.clone_into(&mut sound.active_preset);
+    if self.jam.is_none() {
+      DEFAULT_PRESET.clone_into(&mut sound.active_preset);
+    }
     self.ui.audio.tween = None;
     self.ui.audio.live = Sound::default();
     let mut effects = vec![
@@ -765,6 +842,7 @@ impl App {
       self.hq_effect(),
     ];
     effects.extend(self.persist_sound());
+    effects.extend(self.jam_reset_sound());
     effects.extend(self.update_settings(crate::prefs::SettingsMessage::SetBool(
       crate::prefs::BoolKey::Normalize,
       false,
@@ -802,7 +880,11 @@ impl App {
         Vec::new()
       }
       AudioMessage::Set(field, value) => self.set_sound(field, value),
-      AudioMessage::Commit => self.persist_sound(),
+      AudioMessage::Commit => {
+        let mut effects = self.jam_commit_sound();
+        effects.extend(self.persist_sound());
+        effects
+      }
       AudioMessage::ToggleHq(enabled) => {
         self.settings.sound.hq_enabled = enabled;
         let mut effects = vec![self.hq_effect()];
@@ -1058,6 +1140,47 @@ mod tests {
     assert_close(presets[4].settings.reverb, 20.0);
     assert_close(presets[5].settings.distortion, 75.0);
     assert_close(presets[5].settings.volume, 1.25);
+  }
+
+  #[test]
+  fn only_the_default_presets_are_known_to_the_other_participants_of_a_jam() {
+    for preset in default_presets() {
+      assert!(is_default_preset(&preset.id), "{}", preset.id);
+    }
+    assert!(!is_default_preset("custom_1f"));
+    assert!(!is_default_preset(""));
+  }
+
+  #[test]
+  fn moving_the_sound_writes_nothing_and_skips_a_no_op() {
+    let mut app = app();
+    let target = Sound {
+      reverb: 30.0,
+      ..Sound::default()
+    };
+    assert!(app.move_sound_to(Sound::default(), false).is_empty());
+    let effects = app.move_sound_to(target, false);
+    assert_close(engine_of(&effects).reverb, 30.0);
+    assert!(
+      !effects
+        .iter()
+        .any(|effect| matches!(effect, Effect::SaveSettings(_)))
+    );
+    assert_eq!(app.ui.audio.live, target);
+    app.settings.sound.smooth_presets = true;
+    let back = app.move_sound_to(Sound::default(), true);
+    assert!(back.is_empty());
+    assert!(app.ui.audio.tween.is_some());
+    assert!(app.move_sound_to(Sound::default(), true).is_empty());
+  }
+
+  #[test]
+  fn outside_a_jam_the_active_preset_is_the_one_of_the_settings() {
+    let mut app = app();
+    assert_eq!(app.active_preset(), "p_default");
+    send(&mut app, AudioMessage::ApplyPreset("p_slowed".to_string()));
+    assert_eq!(app.active_preset(), "p_slowed");
+    assert_eq!(app.settings.sound.active_preset, "p_slowed");
   }
 
   #[test]

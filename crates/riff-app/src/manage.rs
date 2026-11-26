@@ -756,6 +756,10 @@ impl App {
     let Some(track) = self.player.current.clone() else {
       return Vec::new();
     };
+    // Un titre bloqué joué dans le jam d'un autre n'est pas scrobblé.
+    if self.jam.is_some() && self.data.is_blocked(&track) {
+      return Vec::new();
+    }
     if track.title.as_deref().is_none_or(str::is_empty)
       || track.artist.as_deref().is_none_or(str::is_empty)
     {
@@ -1186,8 +1190,14 @@ impl App {
         vec![toast("Account exported successfully")]
       }
       ManageMessage::ExportedAccount(Err(error)) => vec![Effect::Toast(error, ToastKind::Error)],
-      ManageMessage::ImportAccount => vec![Effect::PickAccount],
+      // Un compte importé remplace les données et le lecteur : impossible pendant un jam.
+      ManageMessage::ImportAccount => self
+        .jam_unavailable()
+        .unwrap_or_else(|| vec![Effect::PickAccount]),
       ManageMessage::AccountRead(Ok(None)) => Vec::new(),
+      ManageMessage::AccountRead(Ok(Some(_))) if self.jam.is_some() => {
+        self.jam_unavailable().unwrap_or_default()
+      }
       ManageMessage::AccountRead(Ok(Some(value))) => match self.apply_account(&value) {
         Ok(report) => {
           let mut effects = vec![

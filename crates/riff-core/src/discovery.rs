@@ -713,6 +713,79 @@ pub fn normalize_artist_name(name: &str) -> String {
     .to_lowercase()
 }
 
+/// Noms d'artiste qui contiennent un séparateur sans être plusieurs artistes.
+pub const MULTI_ARTIST_EXCEPTIONS: [&str; 26] = [
+  "simon & garfunkel",
+  "hall & oates",
+  "brooks & dunn",
+  "tegan and sara",
+  "earth, wind & fire",
+  "crosby, stills & nash",
+  "crosby, stills, nash & young",
+  "mumford & sons",
+  "florence + the machine",
+  "florence & the machine",
+  "belle & sebastian",
+  "belle and sebastian",
+  "emerson, lake & palmer",
+  "kc & the sunshine band",
+  "kool & the gang",
+  "sly & the family stone",
+  "echo & the bunnymen",
+  "coheed and cambria",
+  "angus & julia stone",
+  "above & beyond",
+  "chase & status",
+  "gnarls barkley",
+  "twenty one pilots",
+  "ac/dc",
+  "t.a.t.u.",
+  "tyler, the creator",
+];
+
+/// Artistes d'un titre à plusieurs artistes (`autoplayArtistList`), un nom d'exception restant entier.
+#[must_use]
+pub fn artist_parts(artist: &str) -> Vec<String> {
+  static RE_SEPARATOR: OnceLock<Regex> = OnceLock::new();
+  let text = artist.trim();
+  if MULTI_ARTIST_EXCEPTIONS.contains(&text.to_lowercase().as_str()) {
+    return vec![text.to_string()];
+  }
+  RE_SEPARATOR
+    .get_or_init(|| Regex::new(r"(?i),|&| feat\.? | ft\.? | x ").expect("valid regex"))
+    .split(text)
+    .map(str::trim)
+    .filter(|part| !part.is_empty())
+    .map(str::to_string)
+    .collect()
+}
+
+/// L'artiste, ou l'un des artistes du titre, est dans l'ensemble à éviter (noms déjà normalisés).
+fn is_artist_avoided(artist: &str, avoid_artists: &HashSet<String>) -> bool {
+  if avoid_artists.is_empty() {
+    return false;
+  }
+  avoid_artists.contains(&normalize_artist_name(artist))
+    || artist_parts(artist)
+      .iter()
+      .any(|part| avoid_artists.contains(&normalize_artist_name(part)))
+}
+
+/// Un résultat brut que l'utilisateur a bloqué ou rejeté : clé, identifiant ou artiste.
+fn is_candidate_avoided(
+  track: &Value,
+  avoid_keys: &HashSet<String>,
+  avoid_artists: &HashSet<String>,
+) -> bool {
+  let artist = strip_youtube_topic(track.get("artist").and_then(Value::as_str).unwrap_or(""));
+  let artist = artist.as_str();
+  let title = track.get("title").and_then(Value::as_str).unwrap_or("");
+  let id = track.get("id").and_then(Value::as_str).unwrap_or("");
+  avoid_keys.contains(&get_track_normalized_key(artist, title))
+    || (!id.is_empty() && avoid_keys.contains(id))
+    || is_artist_avoided(artist, avoid_artists)
+}
+
 pub fn clean_title_for_matching(t: &str) -> String {
   static RE_PARENS: OnceLock<Regex> = OnceLock::new();
   let re = RE_PARENS.get_or_init(|| {
@@ -1353,7 +1426,7 @@ pub fn rank_candidates(
       continue;
     }
     let norm_artist = normalize_artist_name(artist);
-    if avoid_artists.contains(&norm_artist) {
+    if is_artist_avoided(artist, avoid_artists) {
       continue;
     }
 
@@ -1937,6 +2010,9 @@ pub async fn recommend_vibe_tracks(
   for q in queries.iter().take(3) {
     let results = search_ytm_tracks(core, q, 16).await;
     for track in results {
+      if is_candidate_avoided(&track, &avoid_keys, &avoid_artists) {
+        continue;
+      }
       all_found.push(track.clone());
       if let Some((score, scored)) =
         score_discovery_candidate(core, &track, &profile, &heard_keys, &heard_ids)
@@ -2702,4 +2778,77 @@ pub async fn artist(core: &Core, params: Params) -> CoreResult {
       "artist": info
     }),
   )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::{artist_parts, is_artist_avoided, is_candidate_avoided};
+  use crate::util::get_track_normalized_key;
+  use serde_json::json;
+  use std::collections::HashSet;
+
+  fn set(names: &[&str]) -> HashSet<String> {
+    names.iter().map(|name| (*name).to_string()).collect()
+  }
+
+  #[test]
+  fn a_multi_artist_title_is_split_except_for_known_names() {
+    assert_eq!(
+      artist_parts("Daft Punk, Pharrell"),
+      ["Daft Punk", "Pharrell"]
+    );
+    assert_eq!(artist_parts("A feat. B"), ["A", "B"]);
+    assert_eq!(artist_parts("Simon & Garfunkel"), ["Simon & Garfunkel"]);
+  }
+
+  #[test]
+  fn a_blocked_artist_is_avoided_inside_a_multi_artist_title() {
+    let avoid = set(&["pharrell"]);
+    assert!(is_artist_avoided("Daft Punk, Pharrell", &avoid));
+    assert!(is_artist_avoided("Pharrell", &avoid));
+    assert!(!is_artist_avoided("Daft Punk", &avoid));
+    assert!(!is_artist_avoided("Daft Punk", &HashSet::new()));
+  }
+
+  #[test]
+  fn a_known_duo_is_not_split_to_match_one_of_its_members() {
+    assert!(!is_artist_avoided(
+      "Simon & Garfunkel",
+      &set(&["garfunkel"])
+    ));
+    assert!(is_artist_avoided(
+      "Simon & Garfunkel",
+      &set(&["simon & garfunkel"])
+    ));
+  }
+
+  #[test]
+  fn a_raw_result_is_avoided_by_key_id_or_artist() {
+    let track = json!({ "id": "x1", "artist": "Muse", "title": "Hysteria" });
+    let key = get_track_normalized_key("Muse", "Hysteria");
+    assert!(is_candidate_avoided(&track, &set(&[&key]), &HashSet::new()));
+    assert!(is_candidate_avoided(&track, &set(&["x1"]), &HashSet::new()));
+    assert!(is_candidate_avoided(
+      &track,
+      &HashSet::new(),
+      &set(&["muse"])
+    ));
+    assert!(!is_candidate_avoided(
+      &track,
+      &set(&["y"]),
+      &set(&["queen"])
+    ));
+  }
+
+  #[test]
+  fn a_topic_channel_result_is_avoided_by_its_artist() {
+    let track = json!({ "id": "x2", "artist": "Muse - Topic", "title": "Hysteria" });
+    assert!(is_candidate_avoided(
+      &track,
+      &HashSet::new(),
+      &set(&["muse"])
+    ));
+    let key = get_track_normalized_key("Muse", "Hysteria");
+    assert!(is_candidate_avoided(&track, &set(&[&key]), &HashSet::new()));
+  }
 }

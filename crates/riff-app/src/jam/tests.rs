@@ -11,6 +11,8 @@ use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::task::JoinHandle;
 
 const WAIT: Duration = Duration::from_secs(5);
+/// Grâce de l'hôte seul dans les tests ; les attentes de non-fin valent trois fois cette durée.
+const ALONE: Duration = Duration::from_millis(300);
 
 fn host_config() -> HostConfig {
   HostConfig {
@@ -98,12 +100,11 @@ impl Peer {
 }
 
 async fn host(hub: &Hub) -> (Peer, String) {
-  let (link, task) = start_host_with(
-    Transport::Memory(hub.clone()),
-    "Hote".to_string(),
-    1,
-    host_config(),
-  );
+  host_with(hub, host_config()).await
+}
+
+async fn host_with(hub: &Hub, cfg: HostConfig) -> (Peer, String) {
+  let (link, task) = start_host_with(Transport::Memory(hub.clone()), "Hote".to_string(), 1, cfg);
   let events = link.inbox.take().expect("inbox");
   let mut peer = Peer {
     link,
@@ -170,6 +171,19 @@ fn playback(playing: bool) -> PlaybackState {
     start: 1,
     playing,
     pos_ms: 10_000,
+    sound: SharedSound {
+      sv: 3,
+      by: 1,
+      smooth: true,
+      preset: Some("p_slowed".to_string()),
+      sound: JamSound {
+        speed_pitch: 0.82,
+        reverb: 65.0,
+        echo: 15.0,
+        ..JamSound::default()
+      },
+      acks: vec![(1, 4)],
+    },
     ..PlaybackState::default()
   }
 }
@@ -277,6 +291,21 @@ fn every_message_survives_a_json_round_trip() {
     Op::Clear,
     Op::Shuffle { on: true },
     Op::Repeat { on: false },
+    Op::Sound {
+      sound: JamSound {
+        speed_pitch: 0.82,
+        reverb: 65.0,
+        echo: 15.0,
+        ..JamSound::default()
+      },
+      smooth: true,
+      preset: Some("p_slowed".to_string()),
+    },
+    Op::Sound {
+      sound: JamSound::default(),
+      smooth: false,
+      preset: None,
+    },
   ];
   let mut client = vec![
     ClientMsg::Hello {
@@ -351,7 +380,7 @@ fn every_message_survives_a_json_round_trip() {
 fn the_envelope_carries_the_version_and_the_type_tag() {
   let body = protocol::encode(&ClientMsg::Ping { t0: 5 }).expect("encode");
   let json: serde_json::Value = serde_json::from_slice(&body).expect("json");
-  assert_eq!(json["v"], 1);
+  assert_eq!(json["v"], 2);
   assert_eq!(json["t"], "ping");
   assert_eq!(json["t0"], 5);
 }
@@ -359,24 +388,132 @@ fn the_envelope_carries_the_version_and_the_type_tag() {
 #[test]
 fn another_version_is_refused_and_an_unknown_type_is_ignored() {
   assert!(matches!(
-    protocol::decode::<ClientMsg>(br#"{"v":2,"t":"bye"}"#),
-    Err(DecodeError::Version(2))
+    protocol::decode::<ClientMsg>(br#"{"v":1,"t":"bye"}"#),
+    Err(DecodeError::Version(1))
   ));
   assert!(matches!(
     protocol::decode::<ClientMsg>(br#"{"t":"bye"}"#),
     Err(DecodeError::Version(0))
   ));
   assert_eq!(
-    protocol::decode::<ClientMsg>(br#"{"v":1,"t":"from_the_future","x":1}"#).expect("decode"),
+    protocol::decode::<ClientMsg>(br#"{"v":2,"t":"from_the_future","x":1}"#).expect("decode"),
     ClientMsg::Unknown
   );
   assert_eq!(
-    protocol::decode::<HostMsg>(br#"{"v":1,"t":"from_the_future"}"#).expect("decode"),
+    protocol::decode::<HostMsg>(br#"{"v":2,"t":"from_the_future"}"#).expect("decode"),
     HostMsg::Unknown
   );
   assert!(matches!(
     protocol::decode::<ClientMsg>(b"not json"),
     Err(DecodeError::Json(_))
+  ));
+}
+
+#[test]
+fn a_shared_sound_is_clamped_and_a_non_finite_value_takes_the_default() {
+  let wild = JamSound {
+    speed: 9.0,
+    speed_pitch: f32::NAN,
+    pitch: -40.0,
+    reverb: 500.0,
+    distortion: f32::INFINITY,
+    echo: -3.0,
+  }
+  .sanitized();
+  assert_eq!(
+    wild,
+    JamSound {
+      speed: 2.0,
+      speed_pitch: 1.0,
+      pitch: -12.0,
+      reverb: 100.0,
+      distortion: 0.0,
+      echo: 0.0,
+    }
+  );
+  let fine = JamSound {
+    speed: 1.35,
+    ..JamSound::default()
+  };
+  assert_eq!(fine.sanitized(), fine);
+}
+
+#[test]
+fn a_state_without_sound_reads_as_no_effect() {
+  let json = br#"{"v":2,"t":"playback","pv":1,"current":null,"start":1,"seek":0,"playing":false,"pos_ms":0,"at_ms":0,"shuffle":false,"repeat":false,"fade":false}"#;
+  match protocol::decode::<HostMsg>(json).expect("decode") {
+    HostMsg::Playback(state) => {
+      assert_eq!(state.sound, SharedSound::default());
+      assert_eq!(state.sound.sound, JamSound::default());
+      assert!((state.sound.sound.rate() - 1.0).abs() < f64::EPSILON);
+    }
+    other => panic!("playback attendu, reçu {other:?}"),
+  }
+}
+
+#[test]
+fn a_received_shared_sound_keeps_only_default_presets_and_a_bounded_ack_list() {
+  let received = SharedSound {
+    sv: 1,
+    preset: Some("custom_1f".to_string()),
+    sound: JamSound {
+      speed: 40.0,
+      ..JamSound::default()
+    },
+    acks: (0..40).map(|id| (id, u64::from(id))).collect(),
+    ..SharedSound::default()
+  }
+  .sanitized();
+  assert_eq!(received.preset, None);
+  assert!((received.sound.speed - 2.0).abs() < f32::EPSILON);
+  assert_eq!(received.acks.len(), MAX_PARTICIPANTS);
+  let known = SharedSound {
+    preset: Some("p_slowed".to_string()),
+    ..SharedSound::default()
+  }
+  .sanitized();
+  assert_eq!(known.preset.as_deref(), Some("p_slowed"));
+}
+
+#[test]
+fn acknowledging_replaces_the_previous_ack_of_the_same_participant() {
+  let mut shared = SharedSound::default();
+  shared.acknowledge(2, 5);
+  shared.acknowledge(3, 1);
+  shared.acknowledge(2, 9);
+  assert_eq!(shared.ack_of(2), Some(9));
+  assert_eq!(shared.ack_of(3), Some(1));
+  assert_eq!(shared.ack_of(4), None);
+  assert_eq!(shared.acks.len(), 2);
+}
+
+#[test]
+fn the_rate_is_the_engine_speed_factor_never_speed_times_speed_pitch() {
+  let rate = |sound: JamSound| sound.rate();
+  let close = |a: f64, b: f64| (a - b).abs() < 1e-6;
+  assert!(close(
+    rate(JamSound {
+      speed: 2.0,
+      ..JamSound::default()
+    }),
+    2.0
+  ));
+  // `speed_pitch` change aussi la vitesse, `speed` est alors ignoré.
+  assert!(close(
+    rate(JamSound {
+      speed: 2.0,
+      speed_pitch: 0.82,
+      ..JamSound::default()
+    }),
+    0.82
+  ));
+  // Une hauteur de +12 demi-tons double la vitesse de défilement.
+  assert!(close(
+    rate(JamSound {
+      pitch: 12.0,
+      ..JamSound::default()
+    }),
+    2.0
   ));
 }
 
@@ -721,19 +858,43 @@ async fn a_wrong_room_is_refused_then_closed() {
 }
 
 #[tokio::test]
-async fn another_protocol_version_is_refused_at_the_handshake() {
+async fn another_protocol_version_is_refused_with_the_version_of_the_hello() {
   let hub = Hub::new();
   let (_host, ticket) = host(&hub).await;
   let mut raw = Raw::connect(&hub, &ticket).await;
   raw
-    .write_json(r#"{"v":2,"t":"hello","room":"","name":"x","app":"y"}"#)
+    .write_json(r#"{"v":1,"t":"hello","room":"","name":"x","app":"y"}"#)
     .await;
-  assert_eq!(
-    raw.read().await,
-    Some(HostMsg::Refused {
-      reason: Refusal::Version
-    })
-  );
+  let frame = protocol::read_frame(&mut raw.link.reader, MAX_FRAME)
+    .await
+    .expect("frame")
+    .expect("body");
+  let json: serde_json::Value = serde_json::from_slice(&frame).expect("json");
+  assert_eq!(json["v"], 1);
+  assert_eq!(json["reason"], "version");
+}
+
+#[tokio::test]
+async fn a_client_translates_a_refusal_written_in_another_protocol_version() {
+  let hub = Hub::new();
+  let transport = Transport::Memory(hub.clone());
+  let mut listener = transport
+    .listen(Room::random().expect("room"))
+    .await
+    .expect("listen");
+  let ticket = listener.ticket().to_string();
+  let mut late = guest(&hub, &ticket, "late");
+  let mut link = listener.accept().await.expect("link").expect("link");
+  protocol::read_frame(&mut link.reader, MAX_FRAME)
+    .await
+    .expect("hello");
+  protocol::write_frame(
+    &mut link.writer,
+    br#"{"v":1,"t":"refused","reason":"version"}"#,
+  )
+  .await
+  .expect("write");
+  assert_eq!(late.ended().await, EndCause::Refused(Refusal::Version));
 }
 
 #[tokio::test]
@@ -760,7 +921,7 @@ async fn a_first_message_other_than_hello_closes_the_link() {
   assert_eq!(raw.read().await, None);
   let mut oversized = Raw::connect(&hub, &ticket).await;
   let junk = format!(
-    r#"{{"v":1,"t":"hello","room":"{}"}}"#,
+    r#"{{"v":2,"t":"hello","room":"{}"}}"#,
     "a".repeat(MAX_HELLO_FRAME)
   );
   oversized.write_json(&junk).await;
@@ -795,7 +956,7 @@ async fn an_unknown_message_after_admission_is_ignored() {
   let (_host, ticket) = host(&hub).await;
   let mut raw = Raw::joined(&hub, &ticket).await;
   raw
-    .write_json(r#"{"v":1,"t":"from_the_future","x":1}"#)
+    .write_json(r#"{"v":2,"t":"from_the_future","x":1}"#)
     .await;
   raw.write(&ClientMsg::Ping { t0: 3 }).await;
   match raw.read().await {
@@ -964,6 +1125,102 @@ async fn the_host_ending_the_jam_ends_every_guest_without_reconnecting() {
   );
 }
 
+fn alone_config() -> HostConfig {
+  HostConfig {
+    alone_grace: ALONE,
+    ..host_config()
+  }
+}
+
+/// Vrai si le pair reçoit `Ended` avant `within`.
+async fn ends_within(peer: &mut Peer, within: Duration) -> Option<EndCause> {
+  tokio::time::timeout(within, peer.ended()).await.ok()
+}
+
+#[tokio::test]
+async fn the_host_ends_the_jam_once_its_last_guest_left_for_the_grace() {
+  let hub = Hub::new();
+  let (mut host, ticket) = host_with(&hub, alone_config()).await;
+  let mut alice = guest(&hub, &ticket, "Alice");
+  alice.joined().await;
+
+  let left = Instant::now();
+  alice.send(JamOut::Stop);
+  assert_eq!(host.ended().await, EndCause::Alone);
+  assert!(left.elapsed() >= ALONE, "pas de fin avant la grâce");
+  assert!(
+    tokio::time::timeout(WAIT, host.task)
+      .await
+      .expect("host task ends")
+      .is_ok()
+  );
+}
+
+#[tokio::test]
+async fn a_jam_that_never_had_a_guest_stays_open() {
+  let hub = Hub::new();
+  let (mut host, _ticket) = host_with(&hub, alone_config()).await;
+  assert!(ends_within(&mut host, ALONE * 3).await.is_none());
+  assert!(!host.task.is_finished());
+}
+
+#[tokio::test]
+async fn the_jam_stays_open_while_one_guest_remains() {
+  let hub = Hub::new();
+  let (mut host, ticket) = host_with(&hub, alone_config()).await;
+  let mut alice = guest(&hub, &ticket, "Alice");
+  alice.joined().await;
+  let mut bob = guest(&hub, &ticket, "Bob");
+  bob.joined().await;
+
+  alice.send(JamOut::Stop);
+  assert!(ends_within(&mut host, ALONE * 3).await.is_none());
+  let left = Instant::now();
+  bob.send(JamOut::Stop);
+  assert_eq!(host.ended().await, EndCause::Alone);
+  assert!(left.elapsed() >= ALONE);
+}
+
+#[tokio::test]
+async fn a_transient_cut_reconnects_before_the_grace_and_keeps_the_jam() {
+  let hub = Hub::new();
+  let cfg = HostConfig {
+    alone_grace: ALONE * 3,
+    ..host_config()
+  };
+  let (mut host, ticket) = host_with(&hub, cfg).await;
+  let mut alice = guest(&hub, &ticket, "Alice");
+  alice.joined().await;
+
+  hub.cut_all();
+  let (_, participants, ..) = alice.joined().await;
+  assert_eq!(participants.len(), 2);
+  assert!(ends_within(&mut host, ALONE * 4).await.is_none());
+}
+
+#[tokio::test]
+async fn an_arrival_before_the_deadline_cancels_the_countdown() {
+  let hub = Hub::new();
+  let (mut host, ticket) = host_with(&hub, alone_config()).await;
+  let mut alice = guest(&hub, &ticket, "Alice");
+  alice.joined().await;
+  alice.send(JamOut::Stop);
+  host
+    .until(|event| match event {
+      JamEvent::Participants(list) if list.len() == 1 => Some(()),
+      _ => None,
+    })
+    .await;
+  let mut bob = guest(&hub, &ticket, "Bob");
+  bob.joined().await;
+  assert!(ends_within(&mut host, ALONE * 3).await.is_none());
+
+  let left = Instant::now();
+  bob.send(JamOut::Stop);
+  assert_eq!(host.ended().await, EndCause::Alone);
+  assert!(left.elapsed() >= ALONE, "la grâce repart du dernier départ");
+}
+
 #[tokio::test]
 async fn a_cut_link_reconnects_and_joins_again() {
   let hub = Hub::new();
@@ -1129,22 +1386,66 @@ fn the_expected_position_follows_the_anchor_and_is_clamped() {
   let anchor = Instant::now();
   let now = anchor + Duration::from_secs(2);
   assert_eq!(
-    sync::expected_position(10_000, anchor, true, now, None),
+    sync::expected_position(10_000, anchor, true, now, None, 1.0),
     Duration::from_secs(12)
   );
   assert_eq!(
-    sync::expected_position(10_000, anchor, false, now, None),
+    sync::expected_position(10_000, anchor, false, now, None, 1.0),
     Duration::from_secs(10)
   );
   assert_eq!(
-    sync::expected_position(10_000, anchor, true, now, Some(Duration::from_secs(11))),
+    sync::expected_position(
+      10_000,
+      anchor,
+      true,
+      now,
+      Some(Duration::from_secs(11)),
+      1.0
+    ),
     Duration::from_secs(11)
   );
   // Ancre dans le futur : la position n'a pas encore atteint `pos_ms`.
   assert_eq!(
-    sync::expected_position(10_000, now, true, anchor, None),
+    sync::expected_position(10_000, now, true, anchor, None, 1.0),
     Duration::from_secs(8)
   );
+}
+
+#[test]
+fn the_expected_position_runs_at_the_engine_rate() {
+  let anchor = Instant::now();
+  let now = anchor + Duration::from_secs(10);
+  assert_eq!(
+    sync::expected_position(10_000, anchor, true, now, None, 0.82),
+    Duration::from_millis(18_200)
+  );
+  assert_eq!(
+    sync::expected_position(10_000, anchor, true, now, None, 2.0),
+    Duration::from_secs(30)
+  );
+  assert_eq!(
+    sync::expected_position(10_000, anchor, false, now, None, 2.0),
+    Duration::from_secs(10)
+  );
+  assert_eq!(
+    sync::expected_position(
+      10_000,
+      anchor,
+      true,
+      now,
+      Some(Duration::from_secs(25)),
+      2.0
+    ),
+    Duration::from_secs(25)
+  );
+  // Ancre dans le futur : le retrait se fait aussi à la vitesse du moteur.
+  assert_eq!(
+    sync::expected_position(10_000, now, true, anchor, None, 2.0),
+    Duration::from_secs(0)
+  );
+  // Un facteur absurde ne fait jamais paniquer.
+  let _ = sync::expected_position(10_000, anchor, true, now, None, f64::INFINITY);
+  let _ = sync::expected_position(10_000, anchor, true, now, None, f64::NAN);
 }
 
 #[test]
@@ -1183,15 +1484,41 @@ fn the_host_position_extrapolates_for_one_second_at_most() {
   let position = Duration::from_secs(30);
   let at = |ms| now.checked_sub(Duration::from_millis(ms));
   assert_eq!(
-    sync::host_position(position, at(400), true, now),
+    sync::host_position(position, at(400), true, now, 1.0),
     Duration::from_millis(30_400)
   );
   assert_eq!(
-    sync::host_position(position, at(5_000), true, now),
+    sync::host_position(position, at(5_000), true, now, 1.0),
     Duration::from_secs(31)
   );
-  assert_eq!(sync::host_position(position, at(400), false, now), position);
-  assert_eq!(sync::host_position(position, None, true, now), position);
+  assert_eq!(
+    sync::host_position(position, at(400), false, now, 1.0),
+    position
+  );
+  assert_eq!(
+    sync::host_position(position, None, true, now, 1.0),
+    position
+  );
+}
+
+#[test]
+fn the_host_position_extrapolates_at_the_engine_rate() {
+  let now = Instant::now();
+  let position = Duration::from_secs(30);
+  let at = |ms| now.checked_sub(Duration::from_millis(ms));
+  assert_eq!(
+    sync::host_position(position, at(500), true, now, 0.82),
+    Duration::from_millis(30_410)
+  );
+  assert_eq!(
+    sync::host_position(position, at(500), true, now, 2.0),
+    Duration::from_secs(31)
+  );
+  // Au plus 1 s d'extrapolation, multiplié par le facteur.
+  assert_eq!(
+    sync::host_position(position, at(5_000), true, now, 2.0),
+    Duration::from_secs(32)
+  );
 }
 
 #[tokio::test]

@@ -4,7 +4,7 @@ use crate::app::{App, Effect, Message};
 use crate::manage::ImportKind;
 use crate::prefs_visual::{VisualBool, VisualChoice, VisualInt};
 use crate::screens::Screen;
-use crate::settings::{DEFAULT_HOME_ORDER, ThemeMode, UI_SCALE_RANGE};
+use crate::settings::{DEFAULT_HOME_ORDER, DiscordStatus, DiscordTime, ThemeMode, UI_SCALE_RANGE};
 use crate::theme::{ActiveTheme, ThemeSource};
 use crate::update::DEFAULT_SIDEBAR_ORDER;
 use material_colors::color::Rgb;
@@ -122,7 +122,9 @@ pub enum BoolKey {
   TrayOnClose,
   MediaSession,
   DiscordRpc,
-  DiscordArtist,
+  DiscordCover,
+  DiscordPaused,
+  DiscordAlbum,
   UpdateCheck,
 }
 
@@ -161,6 +163,9 @@ pub enum TextKey {
   AudioQuality,
   Nickname,
   JamRelay,
+  JamRendezvous,
+  DiscordStatus,
+  DiscordTime,
 }
 
 /// Blocs de la page qui ne sont pas de simples contrôles.
@@ -263,6 +268,18 @@ const SEARCH_POSITIONS: &[(&str, &str)] =
   &[("left", "Left"), ("middle", "Middle"), ("right", "Right")];
 const HOME_LAYOUTS: &[(&str, &str)] = &[("spotify", "Spotify"), ("riff", "Riff")];
 const QUALITIES: &[(&str, &str)] = &[("low", "Low"), ("medium", "Medium"), ("high", "High")];
+/// Valeurs de `DiscordStatus::key` et `DiscordTime::key`.
+const DISCORD_STATUSES: &[(&str, &str)] = &[
+  ("riff", "Riff"),
+  ("artist", "Artist"),
+  ("track", "Track"),
+  ("track-artist", "Track - Artist"),
+];
+const DISCORD_TIMES: &[(&str, &str)] = &[
+  ("progress", "Progress bar"),
+  ("elapsed", "Elapsed"),
+  ("hidden", "Hidden"),
+];
 
 /// Tout le catalogue, dans l'ordre de la page.
 pub const ENTRIES: &[Entry] = &[
@@ -685,11 +702,36 @@ pub const ENTRIES: &[Entry] = &[
     "",
     Control::Panel(Panel::Lastfm),
   ),
+  // Écart voulu avec Riff (demandé par Hugo) : ces rangées remplacent « Show artist in Discord status ».
   entry(
     Category::Integrations,
-    "Show artist in Discord status",
-    "Display \"Listening to Artist\" instead of \"Listening to Riff\" in compact profile status",
-    Control::Toggle(BoolKey::DiscordArtist),
+    "Discord status",
+    "",
+    Control::Choice(TextKey::DiscordStatus, DISCORD_STATUSES),
+  ),
+  entry(
+    Category::Integrations,
+    "Discord time",
+    "",
+    Control::Choice(TextKey::DiscordTime, DISCORD_TIMES),
+  ),
+  entry(
+    Category::Integrations,
+    "Discord cover",
+    "",
+    Control::Toggle(BoolKey::DiscordCover),
+  ),
+  entry(
+    Category::Integrations,
+    "Show when paused",
+    "",
+    Control::Toggle(BoolKey::DiscordPaused),
+  ),
+  entry(
+    Category::Integrations,
+    "Album on cover hover",
+    "",
+    Control::Toggle(BoolKey::DiscordAlbum),
   ),
   entry(
     Category::Integrations,
@@ -915,6 +957,12 @@ pub const ENTRIES: &[Entry] = &[
     "Leave empty to use the default encrypted relays",
     Control::Input(TextKey::JamRelay),
   ),
+  entry(
+    Category::Advanced,
+    "Jam rendezvous URL",
+    "Leave empty to use the default server that resolves Jam codes",
+    Control::Input(TextKey::JamRendezvous),
+  ),
   entry(Category::About, "Riff", "", Control::Panel(Panel::Version)),
   entry(
     Category::About,
@@ -1124,7 +1172,9 @@ impl App {
       BoolKey::TrayOnClose => settings.tray_on_close,
       BoolKey::MediaSession => settings.media_session,
       BoolKey::DiscordRpc => settings.discord_rpc,
-      BoolKey::DiscordArtist => settings.discord_artist_status,
+      BoolKey::DiscordCover => settings.discord_cover,
+      BoolKey::DiscordPaused => settings.discord_paused,
+      BoolKey::DiscordAlbum => settings.discord_album,
       BoolKey::UpdateCheck => settings.update_check,
     }
   }
@@ -1162,6 +1212,9 @@ impl App {
       TextKey::AudioQuality => &self.data.audio_quality,
       TextKey::Nickname => &self.settings.nickname,
       TextKey::JamRelay => &self.settings.jam_relay,
+      TextKey::JamRendezvous => &self.settings.jam_rendezvous,
+      TextKey::DiscordStatus => self.settings.discord_status.key(),
+      TextKey::DiscordTime => self.settings.discord_time.key(),
     }
   }
 
@@ -1194,7 +1247,9 @@ impl App {
       BoolKey::TrayOnClose => settings.tray_on_close = value,
       BoolKey::MediaSession => settings.media_session = value,
       BoolKey::DiscordRpc => settings.discord_rpc = value,
-      BoolKey::DiscordArtist => settings.discord_artist_status = value,
+      BoolKey::DiscordCover => settings.discord_cover = value,
+      BoolKey::DiscordPaused => settings.discord_paused = value,
+      BoolKey::DiscordAlbum => settings.discord_album = value,
       BoolKey::UpdateCheck => settings.update_check = value,
       BoolKey::CompactEngine => settings.compact_engine_btns = value,
       BoolKey::HideEngine => settings.hide_engine_btns = value,
@@ -1352,6 +1407,19 @@ impl App {
       }
       TextKey::Nickname => self.settings.nickname = value,
       TextKey::JamRelay => self.settings.jam_relay = value,
+      TextKey::JamRendezvous => self.settings.jam_rendezvous = value,
+      TextKey::DiscordStatus => {
+        let Some(status) = DiscordStatus::parse(&value) else {
+          return Vec::new();
+        };
+        self.settings.discord_status = status;
+      }
+      TextKey::DiscordTime => {
+        let Some(time) = DiscordTime::parse(&value) else {
+          return Vec::new();
+        };
+        self.settings.discord_time = time;
+      }
     }
     self.save_settings()
   }
@@ -1590,11 +1658,13 @@ mod tests {
       .any(|effect| matches!(effect, Effect::SaveSettings(_)))
   }
 
-  const ALL_BOOLS: [BoolKey; 29] = [
+  const ALL_BOOLS: [BoolKey; 31] = [
     BoolKey::TrayOnClose,
     BoolKey::MediaSession,
     BoolKey::DiscordRpc,
-    BoolKey::DiscordArtist,
+    BoolKey::DiscordCover,
+    BoolKey::DiscordPaused,
+    BoolKey::DiscordAlbum,
     BoolKey::UpdateCheck,
     BoolKey::SmoothPresets,
     BoolKey::PersistSound,
@@ -1821,15 +1891,64 @@ mod tests {
       .map(|entry| entry.label)
       .collect();
     assert_eq!(
-      labels[..4],
+      labels[..8],
       [
         "Discord RPC",
         "Last.fm Scrobbling",
-        "Show artist in Discord status",
+        "Discord status",
+        "Discord time",
+        "Discord cover",
+        "Show when paused",
+        "Album on cover hover",
         "Spotify"
       ]
     );
     assert!(in_category(Category::Advanced).all(|entry| !entry.label.contains("Discord")));
+    assert!(
+      ENTRIES
+        .iter()
+        .all(|entry| entry.label != "Show artist in Discord status")
+    );
+  }
+
+  #[test]
+  fn the_discord_choices_offer_every_mode_and_persist() {
+    let keys = |options: &[(&str, &str)]| {
+      options
+        .iter()
+        .map(|(key, _)| key.to_string())
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(
+      keys(DISCORD_STATUSES),
+      DiscordStatus::ALL.map(|status| status.key().to_string())
+    );
+    assert_eq!(
+      keys(DISCORD_TIMES),
+      DiscordTime::ALL.map(|time| time.key().to_string())
+    );
+    let mut app = app();
+    for (key, _) in DISCORD_STATUSES {
+      let effects = send(
+        &mut app,
+        SettingsMessage::SetText(TextKey::DiscordStatus, (*key).to_string()),
+      );
+      assert!(saved(&effects));
+      assert_eq!(app.text_pref(TextKey::DiscordStatus), *key);
+    }
+    for (key, _) in DISCORD_TIMES {
+      send(
+        &mut app,
+        SettingsMessage::SetText(TextKey::DiscordTime, (*key).to_string()),
+      );
+      assert_eq!(app.text_pref(TextKey::DiscordTime), *key);
+    }
+    let effects = send(
+      &mut app,
+      SettingsMessage::SetText(TextKey::DiscordTime, "oops".to_string()),
+    );
+    assert!(effects.is_empty());
+    assert_eq!(app.settings.discord_time, DiscordTime::Hidden);
   }
 
   #[test]

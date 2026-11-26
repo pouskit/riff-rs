@@ -1766,14 +1766,38 @@ fn hint_padding() -> Padding {
   ])
 }
 
-/// Rangées Discord de l'onglet Intégrations (`index.html:2043-2087`) ; les autres restent communes.
+/// Rangées Discord de l'onglet Intégrations (`index.html:2043-2087`) ; les autres restent communes. Les réglages
+/// de l'activité reprennent la rangée de « Show artist in Discord status », qu'ils remplacent, sans sa description :
+/// marges de `.setting-item` sans `.setting-hint`.
 fn integrations_row<'a>(
   app: &'a App,
   p: Palette,
   entry: &'static Entry,
 ) -> Option<(Element<'a, Message>, Padding)> {
-  let Control::Toggle(key) = entry.control else {
-    return None;
+  let hinted = !entry.hint.is_empty();
+  let padding = if hinted {
+    hint_padding()
+  } else {
+    plain_padding()
+  };
+  let key = match entry.control {
+    Control::Toggle(key) => key,
+    Control::Choice(key @ (TextKey::DiscordStatus | TextKey::DiscordTime), options) => {
+      let select = dropdown(
+        p,
+        options_of(app, options),
+        app.text_pref(key),
+        move |value| send(SettingsMessage::SetText(key, value)),
+      );
+      let line = row![
+        name_column(app, p, entry, hinted),
+        container(select).width(tokens::css(220.0))
+      ]
+      .spacing(tokens::settings::ROW_TOP_GAP)
+      .align_y(Vertical::Center);
+      return Some((line.into(), padding));
+    }
+    _ => return None,
   };
   let on = app.bool_pref(key);
   let message = send(SettingsMessage::SetBool(key, !on));
@@ -1798,8 +1822,8 @@ fn integrations_row<'a>(
       .align_y(Vertical::Center);
       Some((line.into(), plain_padding()))
     }
-    "Show artist in Discord status" => {
-      Some((toggle_row(app, p, entry, true, on, message), hint_padding()))
+    "Discord cover" | "Show when paused" | "Album on cover hover" => {
+      Some((toggle_row(app, p, entry, hinted, on, message), padding))
     }
     _ => None,
   }
@@ -1996,6 +2020,25 @@ pub(super) fn account_nav_button<'a>(
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn the_discord_activity_rows_without_a_hint_take_the_plain_padding() {
+    let app = App::new(
+      crate::window::PersistedWindowState::default(),
+      crate::settings::NativeSettings::default(),
+      crate::i18n::I18n::default(),
+    );
+    let p = Palette::of(&app);
+    let rows: Vec<_> = crate::prefs::in_category(Category::Integrations)
+      .filter(|entry| entry.label != "Discord RPC")
+      .filter_map(|entry| integrations_row(&app, p, entry).map(|(_, padding)| (entry, padding)))
+      .collect();
+    assert_eq!(rows.len(), 5);
+    for (entry, padding) in rows {
+      assert!(entry.hint.is_empty(), "{}", entry.label);
+      assert_eq!(padding, plain_padding(), "{}", entry.label);
+    }
+  }
 
   #[test]
   fn the_nickname_lives_in_the_account_hero_not_in_the_rows() {

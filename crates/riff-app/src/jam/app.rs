@@ -1,15 +1,17 @@
 //! Le jam vu par `App` : commandes, application chez l'hôte, miroir chez l'invité, diffusion.
 //! Aucune E/S : les échanges avec le réseau passent par `Effect::JamSend` et `JamMessage::Event`.
 
+use super::code::{JamCode, is_legacy};
 use super::protocol::{
-  self, Current, Entry, Notice, NoticeKind, Op, PlaybackState, QueueState, Refusal, RejectReason,
-  WireTrack,
+  self, Current, Entry, JamSound, Notice, NoticeKind, Op, PlaybackState, QueueState, Refusal,
+  RejectReason, SharedSound, WireTrack,
 };
 use super::state::{EntryMeta, HostView, JamState, Phase, Saved, Sent};
 use super::{
   EndCause, JamEvent, JamMessage, JamOut, MAX_QUEUE, MAX_TRACKS_PER_OP, Role, SEEK_THRESHOLD, sync,
 };
 use crate::app::{App, Effect, playback_reset};
+use crate::audio_prefs::{DEFAULT_PRESET, Preset, default_presets, is_default_preset};
 use crate::stream::effective_platform;
 use crate::track_sort;
 use crate::update::{toast_effect, toast_effect_kind};
@@ -21,6 +23,23 @@ use std::time::{Duration, Instant};
 const BLOCKED: &str = "Not available during a Jam";
 const RECONNECTING: &str = "Reconnecting to the Jam…";
 const LOCAL_REFUSED: &str = "Local files can't be played in a Jam";
+
+/// Champ du code à la frappe : majuscules, sauf pour un ancien code d'invitation, qui reste tel quel.
+fn typed_code(input: &str) -> String {
+  if is_legacy(input) {
+    input.to_string()
+  } else {
+    input.to_uppercase()
+  }
+}
+
+/// Champ du code après un collage : un code court prend sa forme affichée (`K7Q-M2X`).
+fn pasted_code(input: &str) -> String {
+  match JamCode::parse(input) {
+    Some(code) => code.display(),
+    None => typed_code(input.trim()),
+  }
+}
 
 fn millis(duration: Duration) -> u64 {
   u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
@@ -86,6 +105,11 @@ impl App {
   fn jam_relay(&self) -> Option<String> {
     let relay = self.settings.jam_relay.trim();
     (!relay.is_empty()).then(|| relay.to_string())
+  }
+
+  fn jam_rendezvous(&self) -> Option<String> {
+    let url = self.settings.jam_rendezvous.trim();
+    (!url.is_empty()).then(|| url.to_string())
   }
 
   fn jam_wire(&self, track: &Track) -> Option<WireTrack> {
@@ -220,7 +244,7 @@ impl App {
 
   /// Applique la commande de `by` (0 : l'hôte). Un refus part à l'invité, ou devient un toast chez l'hôte.
   pub(crate) fn jam_apply(&mut self, by: u32, id: u64, op: Op) -> Vec<Effect> {
-    match self.jam_exec(by, op) {
+    match self.jam_exec(by, id, op) {
       Ok(effects) => effects,
       Err(reason) if by == 0 => self.jam_reject_toast(reason).into_iter().collect(),
       Err(reason) => vec![Effect::JamSend(JamOut::Reject { to: by, id, reason })],
@@ -375,7 +399,7 @@ impl App {
     self.jam_notice(NoticeKind::Added, by, name, title, count)
   }
 
-  fn jam_exec(&mut self, by: u32, op: Op) -> Result<Vec<Effect>, RejectReason> {
+  fn jam_exec(&mut self, by: u32, id: u64, op: Op) -> Result<Vec<Effect>, RejectReason> {
     let Some(jam) = self.jam.as_ref() else {
       return Ok(Vec::new());
     };
@@ -491,7 +515,163 @@ impl App {
         self.player.repeat = on;
         Ok(Vec::new())
       }
+      Op::Sound {
+        sound,
+        smooth,
+        preset,
+      } => Ok(self.jam_exec_sound(by, id, sound, smooth, preset)),
     }
+  }
+
+  // ---- Effets partagés ----
+
+  /// Hôte : applique les effets demandés par `by` (dernier arrivé gagne) et les applique chez lui.
+  fn jam_exec_sound(
+    &mut self,
+    by: u32,
+    id: u64,
+    sound: JamSound,
+    smooth: bool,
+    preset: Option<String>,
+  ) -> Vec<Effect> {
+    let Some(jam) = self.jam.as_mut() else {
+      return Vec::new();
+    };
+    let shared = jam.shared.get_or_insert_with(SharedSound::default);
+    shared.sv += 1;
+    shared.by = by;
+    shared.smooth = smooth;
+    shared.preset = preset.filter(|id| is_default_preset(id));
+    shared.sound = sound.sanitized();
+    if by != 0 {
+      shared.acknowledge(by, id);
+    }
+    self.jam_show_shared(smooth)
+  }
+
+  /// Amène le son courant aux effets du jam, avec les réglages personnels (volume, égaliseur) du courant.
+  fn jam_show_shared(&mut self, smooth: bool) -> Vec<Effect> {
+    let Some(shared) = self.jam.as_ref().and_then(|jam| jam.shared.as_ref()) else {
+      return Vec::new();
+    };
+    let target = shared.sound.apply_to(self.ui.audio.live);
+    self.move_sound_to(target, smooth)
+  }
+
+  /// Envoie des effets à l'hôte (ou les applique, chez lui). Chez l'invité, la commande reste en attente
+  /// d'acquittement : les états reçus entre-temps n'écrasent pas l'aperçu local.
+  fn jam_send_sound(
+    &mut self,
+    sound: JamSound,
+    smooth: bool,
+    preset: Option<String>,
+  ) -> Vec<Effect> {
+    let host = self.jam_is_host();
+    let effects = self
+      .jam_divert(Op::Sound {
+        sound,
+        smooth,
+        preset,
+      })
+      .unwrap_or_default();
+    if !host && let Some(jam) = self.jam.as_mut().filter(|jam| jam.phase == Phase::Live) {
+      jam.sound_pending = Some(jam.next_cmd);
+    }
+    effects
+  }
+
+  /// Relâchement d'un curseur : envoie les effets partagés s'ils diffèrent de ceux du jam. Un `Set` seul ne
+  /// passe jamais ici : au-delà de 50 trames par seconde l'hôte coupe l'invité.
+  pub(crate) fn jam_commit_sound(&mut self) -> Vec<Effect> {
+    let live = JamSound::from_sound(&self.ui.audio.live);
+    let differs = self.jam.as_ref().is_some_and(|jam| {
+      (jam.is_host() || jam.phase == Phase::Live)
+        && jam
+          .shared
+          .as_ref()
+          .is_none_or(|shared| shared.sound != live)
+    });
+    if differs {
+      self.jam_send_sound(live, false, None)
+    } else {
+      Vec::new()
+    }
+  }
+
+  /// Préréglage choisi pendant un jam : seuls les champs partagés partent ; le volume du préréglage (Distortion
+  /// 1,25) et l'égaliseur restent ceux de l'utilisateur. Aperçu local immédiat chez l'invité.
+  pub(crate) fn jam_apply_preset(&mut self, preset: &Preset) -> Vec<Effect> {
+    let sound = JamSound::from_sound(&preset.settings);
+    let smooth = self.settings.sound.smooth_presets;
+    let id = is_default_preset(&preset.id).then(|| preset.id.clone());
+    let mut effects = Vec::new();
+    if self.jam_is_guest()
+      && self
+        .jam
+        .as_ref()
+        .is_some_and(|jam| jam.phase == Phase::Live)
+    {
+      let target = sound.apply_to(self.ui.audio.live);
+      effects.extend(self.move_sound_to(target, smooth));
+    }
+    effects.extend(self.jam_send_sound(sound, smooth, id));
+    effects
+  }
+
+  /// « Reset audio settings » : les effets du jam reviennent aux valeurs par défaut pour tout le monde.
+  pub(crate) fn jam_reset_sound(&mut self) -> Vec<Effect> {
+    if self.jam.is_none() {
+      return Vec::new();
+    }
+    self.jam_send_sound(JamSound::default(), false, Some(DEFAULT_PRESET.to_string()))
+  }
+
+  /// Entrée dans un jam : retient le son personnel (une seule fois) et rend définitif celui qui est en
+  /// transition. Rend les effets à envoyer au moteur.
+  fn jam_capture_sound(&mut self) -> Vec<Effect> {
+    let had_tween = self.ui.audio.tween.is_some();
+    let first = self.jam.as_ref().is_none_or(|jam| jam.personal.is_none());
+    let live = self.settled_sound();
+    let mut effects = Vec::new();
+    if had_tween {
+      effects.push(Effect::AudioSound(Box::new(live.to_engine())));
+      if first {
+        // Le préréglage hors jam n'était écrit qu'à la fin de sa transition.
+        effects.extend(self.persist_sound());
+      }
+    }
+    if let Some(jam) = self.jam.as_mut()
+      && jam.personal.is_none()
+    {
+      jam.personal = Some(live);
+    }
+    effects
+  }
+
+  /// Invité : applique les effets de l'état reçu, sauf si une commande de l'invité n'est pas encore acquittée.
+  fn jam_guest_sound(&mut self, received: &SharedSound) -> Vec<Effect> {
+    let Some(jam) = self.jam.as_mut() else {
+      return Vec::new();
+    };
+    let mut acknowledged = false;
+    if let Some(pending) = jam.sound_pending {
+      if received.ack_of(jam.me).is_none_or(|ack| ack < pending) {
+        return Vec::new();
+      }
+      jam.sound_pending = None;
+      acknowledged = true;
+    }
+    let first = jam.shared.is_none();
+    let changed = jam
+      .shared
+      .as_ref()
+      .is_none_or(|known| known.sv != received.sv || known.sound != received.sound);
+    jam.shared = Some(received.clone());
+    if !changed && !acknowledged {
+      return Vec::new();
+    }
+    // Admission, reconnexion ou refus : pas de transition, le titre se charge avec le bon son.
+    self.jam_show_shared(received.smooth && !first)
   }
 
   // ---- Hôte : compteurs et diffusion ----
@@ -590,6 +770,7 @@ impl App {
     let playing = self.playback.is_playing && !self.player.loading;
     let (shuffle, repeat) = (self.player.shuffle, self.player.repeat);
     let position = self.playback.position;
+    let live = self.ui.audio.live;
     let current = self
       .player
       .current
@@ -619,6 +800,7 @@ impl App {
       playing,
       shuffle,
       repeat,
+      sv: jam.shared.as_ref().map_or(0, |shared| shared.sv),
     };
     if let Some(queue) = queue.as_mut() {
       jam.qv += 1;
@@ -634,11 +816,18 @@ impl App {
         start: sent.start,
         seek: sent.seek,
         playing,
-        pos_ms: millis(sync::host_position(position, jam.position_at, playing, now)),
+        pos_ms: millis(sync::host_position(
+          position,
+          jam.position_at,
+          playing,
+          now,
+          JamSound::from_sound(&live).rate(),
+        )),
         at_ms: 0,
         shuffle,
         repeat,
         fade: jam.pending_fade,
+        sound: jam.shared.clone().unwrap_or_default(),
       };
       jam.sent = Some(sent);
       jam.force = false;
@@ -716,7 +905,7 @@ impl App {
       }
       JamMessage::Start => self.jam_start(),
       JamMessage::CodeInput(code) => {
-        self.ui.jam_panel.code = code;
+        self.ui.jam_panel.code = typed_code(&code);
         Vec::new()
       }
       JamMessage::NameInput(name) => {
@@ -726,7 +915,7 @@ impl App {
       JamMessage::Paste => vec![Effect::JamPaste],
       JamMessage::Pasted(text) => {
         if let Some(text) = text {
-          self.ui.jam_panel.code = text.trim().to_string();
+          self.ui.jam_panel.code = pasted_code(&text);
         }
         Vec::new()
       }
@@ -809,7 +998,10 @@ impl App {
         track.platform = (!platform.is_empty()).then_some(platform);
       }
     }
+    effects.extend(self.jam_capture_sound());
     let mut jam = JamState::new(Role::Host, &name);
+    jam.personal = Some(self.ui.audio.live);
+    jam.shared = Some(self.jam_initial_sound());
     for _ in 0..self.player.queue.len() {
       let uid = jam.fresh_uid();
       jam.entries.push(EntryMeta {
@@ -826,6 +1018,7 @@ impl App {
     effects.push(Effect::JamHost {
       name,
       relay: self.jam_relay(),
+      rendezvous: self.jam_rendezvous(),
     });
     effects
   }
@@ -846,6 +1039,7 @@ impl App {
       ticket,
       name,
       relay: self.jam_relay(),
+      rendezvous: self.jam_rendezvous(),
     });
     effects
   }
@@ -863,6 +1057,17 @@ impl App {
           jam.sent_queue = None;
         }
         Vec::new()
+      }
+      JamEvent::CodeChanged { ticket } if self.jam_is_host() => {
+        if let Some(jam) = self.jam.as_mut() {
+          jam.ticket = Some(ticket);
+        }
+        vec![toast_effect_kind(
+          &self
+            .i18n
+            .t("Jam code compromised, a new code was generated"),
+          ToastKind::Error,
+        )]
       }
       JamEvent::RelayUnreachable => {
         vec![toast_effect_kind(
@@ -910,7 +1115,11 @@ impl App {
           vec![toast_effect(&self.jam_notice_text(&notice))]
         }
       }
-      JamEvent::Rejected { reason, .. } => self.jam_reject_toast(reason).into_iter().collect(),
+      JamEvent::Rejected { id, reason } => {
+        let mut effects = self.jam_unpend_sound(id);
+        effects.extend(self.jam_reject_toast(reason));
+        effects
+      }
       JamEvent::Reconnecting { attempt } => {
         if let Some(jam) = self.jam.as_mut() {
           jam.phase = Phase::Reconnecting(attempt);
@@ -918,7 +1127,8 @@ impl App {
         Vec::new()
       }
       JamEvent::Ended(cause) => self.jam_ended(cause),
-      JamEvent::GuestOp { .. }
+      JamEvent::CodeChanged { .. }
+      | JamEvent::GuestOp { .. }
       | JamEvent::GuestReport { .. }
       | JamEvent::Queue(_)
       | JamEvent::Playback { .. } => Vec::new(),
@@ -931,6 +1141,15 @@ impl App {
       return Vec::new();
     };
     let mut effects = Vec::new();
+    if let Some(mut personal) = jam.personal.take() {
+      // Chacun, hôte compris, retrouve ses effets d'avant. Rien n'est enregistré : le disque a toujours
+      // gardé le son personnel.
+      let live = self.ui.audio.live;
+      personal.volume = live.volume;
+      personal.eq = live.eq;
+      personal.eq_bands = live.eq_bands;
+      effects.extend(self.move_sound_to(personal, false));
+    }
     if let Some(saved) = jam.saved.take() {
       let token = self.player.token.max(saved.player.token) + 1;
       let crossfade = self.player.crossfade;
@@ -941,6 +1160,14 @@ impl App {
       self.playback = playback_reset(&self.playback);
       effects.push(Effect::AudioPause);
       effects.push(self.state_effect(false));
+    }
+    // Hôte : l'aléatoire et la répétition du jam redeviennent ceux de ses réglages.
+    if !jam.is_guest() {
+      let scope = self.player.scope.clone();
+      self.player.shuffle = scope
+        .as_deref()
+        .map_or(self.data.shuffle, |scope| self.data.shuffle_on(scope));
+      self.player.repeat = self.data.repeat;
     }
     // Hôte : le titre en cours, joué malgré son blocage pendant le jam, cède la place au suivant.
     let current_blocked = self
@@ -954,8 +1181,11 @@ impl App {
     let text = match cause {
       EndCause::Stopped => None,
       EndCause::HostEnded => Some("The host ended the Jam"),
+      EndCause::Alone => Some("The Jam ended because everyone else left"),
       EndCause::Lost => Some("Connection to the Jam was lost"),
       EndCause::InvalidTicket => Some("Invalid invite code"),
+      EndCause::CodeNotFound => Some("Code not found or the Jam ended"),
+      EndCause::CodeStale => Some("Code expired, or check your system clock"),
       EndCause::Refused(Refusal::Room) => Some("Wrong or expired invite code"),
       EndCause::Refused(Refusal::Full) => Some("This Jam is full"),
       EndCause::Refused(Refusal::Version) => Some("This Jam uses another version of Riff"),
@@ -965,7 +1195,7 @@ impl App {
       EndCause::Transport(_) => Some("Connection to the Jam was lost"),
     };
     if let Some(text) = text {
-      let kind = if matches!(cause, EndCause::HostEnded) {
+      let kind = if matches!(cause, EndCause::HostEnded | EndCause::Alone) {
         ToastKind::Info
       } else {
         ToastKind::Error
@@ -992,13 +1222,16 @@ impl App {
     jam.me = you;
     jam.participants = participants;
     jam.phase = Phase::Live;
+    // Une nouvelle admission repart de l'état de l'hôte : plus de commande en attente, effets réappliqués.
+    jam.sound_pending = None;
+    jam.shared = None;
     if jam.saved.is_none() {
       jam.saved = Some(Box::new(Saved {
         player: self.player.clone(),
       }));
     }
     let host = jam.host_name();
-    let mut effects = Vec::new();
+    let mut effects = self.jam_capture_sound();
     if first {
       self.player.radio = false;
       self.player.my_wave = false;
@@ -1042,10 +1275,60 @@ impl App {
       state.playing,
       now,
       (duration > 0.0).then(|| Duration::from_secs_f64(duration)),
+      state.sound.sound.rate(),
     )
   }
 
-  fn jam_guest_playback(&mut self, state: PlaybackState, anchor: Instant) -> Vec<Effect> {
+  /// Effets du jam au démarrage de l'hôte : ses effets du moment, avec le préréglage par défaut qui les produit.
+  fn jam_initial_sound(&self) -> SharedSound {
+    let sound = JamSound::from_sound(&self.ui.audio.live);
+    let active = &self.settings.sound.active_preset;
+    let preset = default_presets()
+      .into_iter()
+      .find(|preset| preset.id == *active && JamSound::from_sound(&preset.settings) == sound)
+      .map(|preset| preset.id);
+    SharedSound {
+      preset,
+      sound,
+      ..SharedSound::default()
+    }
+  }
+
+  /// Invité : la commande `id` est refusée. Les effets de l'hôte reprennent la main sur l'aperçu local.
+  fn jam_unpend_sound(&mut self, id: u64) -> Vec<Effect> {
+    let Some(jam) = self
+      .jam
+      .as_mut()
+      .filter(|jam| jam.sound_pending == Some(id))
+    else {
+      return Vec::new();
+    };
+    jam.sound_pending = None;
+    let latest = jam.host.as_ref().map(|view| view.state.sound.clone());
+    jam.shared = None;
+    let Some(latest) = latest else {
+      return Vec::new();
+    };
+    self.jam_guest_sound(&latest)
+  }
+
+  /// Effets d'abord (un titre qui démarre est chargé avec le bon son), puis lecture.
+  fn jam_guest_playback(&mut self, mut state: PlaybackState, anchor: Instant) -> Vec<Effect> {
+    let stale = self
+      .jam
+      .as_ref()
+      .and_then(|jam| jam.host.as_ref())
+      .is_some_and(|view| state.pv < view.state.pv);
+    if stale {
+      return Vec::new();
+    }
+    state.sound = state.sound.sanitized();
+    let mut effects = self.jam_guest_sound(&state.sound);
+    effects.extend(self.jam_guest_mirror(state, anchor));
+    effects
+  }
+
+  fn jam_guest_mirror(&mut self, state: PlaybackState, anchor: Instant) -> Vec<Effect> {
     let now = Instant::now();
     let Some(jam) = self.jam.as_mut() else {
       return Vec::new();
@@ -1142,7 +1425,14 @@ impl App {
       .duration
       .filter(|seconds| seconds.is_finite() && *seconds > 0.0)
       .map(Duration::from_secs_f64);
-    let expected = sync::expected_position(state.pos_ms, anchor, state.playing, now, duration);
+    let expected = sync::expected_position(
+      state.pos_ms,
+      anchor,
+      state.playing,
+      now,
+      duration,
+      state.sound.sound.rate(),
+    );
     self.player.play_external(track, index);
     if let Some(jam) = self.jam.as_mut() {
       jam.last_correction = None;

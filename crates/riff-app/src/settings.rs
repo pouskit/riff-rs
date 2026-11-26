@@ -65,6 +65,74 @@ impl ImportSource {
   }
 }
 
+/// Ligne de statut Discord (« Discord status »). Écart voulu avec Riff (demandé par Hugo), qui n'a que
+/// l'interrupteur « Show artist in Discord status » : `Riff` et `Artist` en sont les deux positions.
+/// Le défaut est en dernier : `serde(other)` l'exige, une valeur inconnue le donne.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiscordStatus {
+  /// « Listening to Riff ».
+  Riff,
+  Track,
+  /// Titre et artiste.
+  TrackArtist,
+  #[default]
+  #[serde(other)]
+  Artist,
+}
+
+impl DiscordStatus {
+  pub const ALL: [Self; 4] = [Self::Riff, Self::Artist, Self::Track, Self::TrackArtist];
+
+  /// Valeur stockée et envoyée à `riff_core::discord`.
+  #[must_use]
+  pub const fn key(self) -> &'static str {
+    match self {
+      Self::Riff => "riff",
+      Self::Artist => "artist",
+      Self::Track => "track",
+      Self::TrackArtist => "track-artist",
+    }
+  }
+
+  #[must_use]
+  pub fn parse(value: &str) -> Option<Self> {
+    Self::ALL.into_iter().find(|status| status.key() == value)
+  }
+}
+
+/// Minutage de l'activité Discord (« Discord time »). Défaut en dernier, comme pour [`DiscordStatus`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiscordTime {
+  /// Début seul.
+  Elapsed,
+  Hidden,
+  /// Début et fin : barre de progression.
+  #[default]
+  #[serde(other)]
+  Progress,
+}
+
+impl DiscordTime {
+  pub const ALL: [Self; 3] = [Self::Progress, Self::Elapsed, Self::Hidden];
+
+  /// Valeur stockée et envoyée à `riff_core::discord`.
+  #[must_use]
+  pub const fn key(self) -> &'static str {
+    match self {
+      Self::Progress => "progress",
+      Self::Elapsed => "elapsed",
+      Self::Hidden => "hidden",
+    }
+  }
+
+  #[must_use]
+  pub fn parse(value: &str) -> Option<Self> {
+    Self::ALL.into_iter().find(|time| time.key() == value)
+  }
+}
+
 /// Réglages de `native-settings.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -103,6 +171,8 @@ pub struct NativeSettings {
   pub jam_name: String,
   /// Relais du jam choisi par l'utilisateur ; vide : relais par défaut.
   pub jam_relay: String,
+  /// Relais pkarr de rendez-vous du code court ; vide : celui de n0.
+  pub jam_rendezvous: String,
   pub avatar: Option<String>,
   /// Catégorie ouverte de la page de réglages.
   pub settings_cat: String,
@@ -125,8 +195,16 @@ pub struct NativeSettings {
   pub media_session: bool,
   /// Présence Discord (`devsize_discord_rpc`).
   pub discord_rpc: bool,
-  /// L'artiste dans le statut Discord (`riff_discord_artist_status`).
-  pub discord_artist_status: bool,
+  /// Ligne de statut Discord (`riff_rs_discord_status` ; absente : d'après `riff_discord_artist_status`).
+  pub discord_status: DiscordStatus,
+  /// Minutage Discord (`riff_rs_discord_time`).
+  pub discord_time: DiscordTime,
+  /// Pochette dans l'activité Discord (`riff_rs_discord_cover`).
+  pub discord_cover: bool,
+  /// Activité gardée en pause (`riff_rs_discord_paused`) ; désactivé : effacée, comme dans Riff.
+  pub discord_paused: bool,
+  /// Album au survol de la pochette (`riff_rs_discord_album`).
+  pub discord_album: bool,
   /// Réduire le mouvement (`riff_adv_reduce_motion`, `app.js:1094`). Absent : la préférence du système, relue à chaque lancement
   /// (`systemPrefersReducedMotion`), comme un Riff vierge.
   #[serde(skip_serializing_if = "Option::is_none")]
@@ -183,6 +261,7 @@ impl Default for NativeSettings {
       nickname: DEFAULT_NICKNAME.to_string(),
       jam_name: String::new(),
       jam_relay: String::new(),
+      jam_rendezvous: String::new(),
       avatar: None,
       settings_cat: DEFAULT_CATEGORY.to_string(),
       adv_open: false,
@@ -198,7 +277,11 @@ impl Default for NativeSettings {
       main_always_on_top: false,
       media_session: true,
       discord_rpc: true,
-      discord_artist_status: true,
+      discord_status: DiscordStatus::default(),
+      discord_time: DiscordTime::default(),
+      discord_cover: true,
+      discord_paused: false,
+      discord_album: true,
       update_check: true,
       reduce_motion: None,
       perf_mode: false,
@@ -280,6 +363,7 @@ impl NativeSettings {
         .map_or(defaults.nickname, str::to_string),
       jam_name: defaults.jam_name,
       jam_relay: defaults.jam_relay,
+      jam_rendezvous: defaults.jam_rendezvous,
       avatar: storage.text("riff_user_avatar").map(str::to_string),
       settings_cat: text("riff_settings_cat", defaults.settings_cat),
       adv_open: storage.text("riff_adv_open") == Some("true"),
@@ -312,7 +396,14 @@ impl NativeSettings {
         .text("riff_win_global_media_keys")
         .map_or(defaults.media_session, |value| value == "true"),
       discord_rpc: storage.text("devsize_discord_rpc") != Some("false"),
-      discord_artist_status: storage.text("riff_discord_artist_status") != Some("0"),
+      discord_status: discord_status_from(storage),
+      discord_time: storage
+        .text("riff_rs_discord_time")
+        .and_then(DiscordTime::parse)
+        .unwrap_or_default(),
+      discord_cover: storage.text("riff_rs_discord_cover") != Some("false"),
+      discord_paused: storage.text("riff_rs_discord_paused") == Some("true"),
+      discord_album: storage.text("riff_rs_discord_album") != Some("false"),
       update_check: defaults.update_check,
       reduce_motion: storage
         .text("riff_adv_reduce_motion")
@@ -340,7 +431,8 @@ impl NativeSettings {
       Ok(raw) => match serde_json::from_str::<Map<String, Value>>(
         raw.strip_prefix('\u{feff}').unwrap_or(&raw),
       ) {
-        Ok(saved) => {
+        Ok(mut saved) => {
+          migrate_discord_status(&mut saved);
           // « Start fresh » : aucun champ absent n'est complété depuis `storage.json`.
           let fresh_base;
           let base = if saved.get("importSource") == Some(&Value::String("fresh".to_string())) {
@@ -456,8 +548,16 @@ impl NativeSettings {
     put("devsize_discord_rpc", word(self.discord_rpc));
     put(
       "riff_discord_artist_status",
-      bit(self.discord_artist_status),
+      bit(self.discord_status != DiscordStatus::Riff),
     );
+    put(
+      "riff_rs_discord_status",
+      self.discord_status.key().to_string(),
+    );
+    put("riff_rs_discord_time", self.discord_time.key().to_string());
+    put("riff_rs_discord_cover", word(self.discord_cover));
+    put("riff_rs_discord_paused", word(self.discord_paused));
+    put("riff_rs_discord_album", word(self.discord_album));
     if let Some(reduced) = self.reduce_motion {
       put("riff_adv_reduce_motion", word(reduced));
     }
@@ -508,6 +608,34 @@ impl NativeSettings {
       let _ = fs::remove_file(&tmp);
     }
     res
+  }
+}
+
+/// `riff_rs_discord_status`, sinon l'interrupteur de Riff : `"0"` donne `Riff`, toute autre valeur `Artist`.
+/// Les deux clés sont lues : l'ancienne, réécrite par l'export de compte, ne passe pas pour une clé inconnue.
+fn discord_status_from(storage: &LegacyStorage) -> DiscordStatus {
+  let artist_status = storage.text("riff_discord_artist_status");
+  storage
+    .text("riff_rs_discord_status")
+    .and_then(DiscordStatus::parse)
+    .unwrap_or(if artist_status == Some("0") {
+      DiscordStatus::Riff
+    } else {
+      DiscordStatus::Artist
+    })
+}
+
+/// Fichier d'avant « Discord status » : l'ancien interrupteur `discordArtistStatus` donne le mode, puis disparaît.
+fn migrate_discord_status(saved: &mut Map<String, Value>) {
+  if let Some(old) = saved.remove("discordArtistStatus")
+    && !saved.contains_key("discordStatus")
+  {
+    let status = if old == Value::Bool(false) {
+      DiscordStatus::Riff
+    } else {
+      DiscordStatus::Artist
+    };
+    saved.insert("discordStatus".to_string(), status.key().into());
   }
 }
 
@@ -1105,28 +1233,157 @@ mod tests {
   }
 
   #[test]
-  fn the_discord_artist_status_import_is_off_only_for_zero() {
+  fn the_discord_status_comes_from_the_riff_switch_when_its_own_key_is_absent() {
     let from = |content: &str| NativeSettings::imported_from(&storage_with(content).1);
-    assert!(!from(r#"{ "riff_discord_artist_status": "0" }"#).discord_artist_status);
-    assert!(from(r#"{ "riff_discord_artist_status": "1" }"#).discord_artist_status);
-    assert!(from(r#"{ "riff_ui_lang": "uk" }"#).discord_artist_status);
+    let status = |content: &str| from(content).discord_status;
+    assert_eq!(
+      status(r#"{ "riff_discord_artist_status": "0" }"#),
+      DiscordStatus::Riff
+    );
+    assert_eq!(
+      status(r#"{ "riff_discord_artist_status": "1" }"#),
+      DiscordStatus::Artist
+    );
+    assert_eq!(status(r#"{ "riff_ui_lang": "uk" }"#), DiscordStatus::Artist);
+    assert_eq!(
+      status(r#"{ "riff_discord_artist_status": "0", "riff_rs_discord_status": "track" }"#),
+      DiscordStatus::Track
+    );
+    assert_eq!(
+      status(r#"{ "riff_discord_artist_status": "0", "riff_rs_discord_status": "oops" }"#),
+      DiscordStatus::Riff,
+      "valeur inconnue : l'ancienne clé"
+    );
+    let blank = from("{}");
+    assert_eq!(blank.discord_time, DiscordTime::Progress);
+    assert!(blank.discord_cover && !blank.discord_paused && blank.discord_album);
+  }
+
+  #[test]
+  fn reading_the_discord_status_marks_both_keys_as_read() {
+    let (_, storage) = storage_with(
+      r#"{ "riff_discord_artist_status": "1", "riff_rs_discord_status": "track-artist" }"#,
+    );
+    let settings = NativeSettings::imported_from(&storage);
+    assert_eq!(settings.discord_status, DiscordStatus::TrackArtist);
+    assert!(settings.legacy.is_empty(), "{:?}", settings.legacy);
   }
 
   #[test]
   fn the_tray_and_discord_settings_survive_an_account_round_trip() {
-    let round_trip = |tray_on_close, discord_rpc, discord_artist_status| {
-      let settings = NativeSettings {
-        tray_on_close,
-        discord_rpc,
-        discord_artist_status,
-        ..NativeSettings::default()
-      };
+    let round_trip = |settings: NativeSettings| {
       NativeSettings::imported_from(&LegacyStorage::from_entries(&settings.to_legacy_entries()))
     };
-    let off = round_trip(false, false, false);
-    assert!(!off.tray_on_close && !off.discord_rpc && !off.discord_artist_status);
-    let on = round_trip(true, true, true);
-    assert!(on.tray_on_close && on.discord_rpc && on.discord_artist_status);
+    let off = round_trip(NativeSettings {
+      tray_on_close: false,
+      discord_rpc: false,
+      discord_status: DiscordStatus::Riff,
+      discord_time: DiscordTime::Hidden,
+      discord_cover: false,
+      discord_paused: true,
+      discord_album: false,
+      ..NativeSettings::default()
+    });
+    assert!(!off.tray_on_close && !off.discord_rpc);
+    assert_eq!(
+      (off.discord_status, off.discord_time),
+      (DiscordStatus::Riff, DiscordTime::Hidden)
+    );
+    assert!(!off.discord_cover && off.discord_paused && !off.discord_album);
+    for (status, time) in [
+      (DiscordStatus::Artist, DiscordTime::Progress),
+      (DiscordStatus::Track, DiscordTime::Elapsed),
+      (DiscordStatus::TrackArtist, DiscordTime::Hidden),
+    ] {
+      let on = round_trip(NativeSettings {
+        tray_on_close: true,
+        discord_rpc: true,
+        discord_status: status,
+        discord_time: time,
+        ..NativeSettings::default()
+      });
+      assert!(on.tray_on_close && on.discord_rpc);
+      assert_eq!((on.discord_status, on.discord_time), (status, time));
+      assert!(on.discord_cover && !on.discord_paused && on.discord_album);
+    }
+  }
+
+  #[test]
+  fn the_riff_switch_is_still_exported_for_riff() {
+    let exported = |discord_status| {
+      NativeSettings {
+        discord_status,
+        ..NativeSettings::default()
+      }
+      .to_legacy_entries()["riff_discord_artist_status"]
+        .clone()
+    };
+    assert_eq!(exported(DiscordStatus::Riff), json!("0"));
+    for status in [
+      DiscordStatus::Artist,
+      DiscordStatus::Track,
+      DiscordStatus::TrackArtist,
+    ] {
+      assert_eq!(exported(status), json!("1"));
+    }
+  }
+
+  #[test]
+  fn an_older_settings_file_migrates_its_artist_switch_to_the_discord_status() {
+    let dir = temp_dir();
+    let path = dir.join(FILE_NAME);
+    let storage = storage_with(r#"{ "riff_discord_artist_status": "1" }"#).1;
+    fs::write(&path, r#"{ "discordArtistStatus": false }"#).unwrap();
+    let loaded = NativeSettings::load_or_import(&path, &storage);
+    assert_eq!(loaded.discord_status, DiscordStatus::Riff);
+    assert!(!loaded.extra.contains_key("discordArtistStatus"));
+    fs::write(&path, r#"{ "discordArtistStatus": true }"#).unwrap();
+    assert_eq!(
+      NativeSettings::load_or_import(&path, &LegacyStorage::default()).discord_status,
+      DiscordStatus::Artist
+    );
+    fs::write(
+      &path,
+      r#"{ "discordArtistStatus": false, "discordStatus": "track" }"#,
+    )
+    .unwrap();
+    assert_eq!(
+      NativeSettings::load_or_import(&path, &LegacyStorage::default()).discord_status,
+      DiscordStatus::Track
+    );
+  }
+
+  #[test]
+  fn the_discord_settings_survive_a_save_and_an_unknown_value_keeps_the_default() {
+    let dir = temp_dir();
+    let path = dir.join(FILE_NAME);
+    let settings = NativeSettings {
+      discord_status: DiscordStatus::TrackArtist,
+      discord_time: DiscordTime::Elapsed,
+      discord_paused: true,
+      ..NativeSettings::default()
+    };
+    settings.save(&path).unwrap();
+    let raw: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+      (&raw["discordStatus"], &raw["discordTime"]),
+      (&json!("track-artist"), &json!("elapsed"))
+    );
+    assert_eq!(
+      NativeSettings::load_or_import(&path, &LegacyStorage::default()),
+      settings
+    );
+    fs::write(
+      &path,
+      r#"{ "discordStatus": "later", "discordTime": "later" }"#,
+    )
+    .unwrap();
+    let loaded = NativeSettings::load_or_import(&path, &LegacyStorage::default());
+    assert_eq!(
+      (loaded.discord_status, loaded.discord_time),
+      (DiscordStatus::Artist, DiscordTime::Progress)
+    );
+    assert!(!dir.join("native-settings.json.corrupt").exists());
   }
 
   #[test]

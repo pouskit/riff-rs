@@ -37,7 +37,7 @@ Commande de la documentation du projet : la clé publique est affichée et écri
 
 Ouvrir `minisign.pub` : la seconde ligne (base64, commence par `RW`) est la clé. La copier dans la constante unique `UPDATE_PUBLIC_KEY` de `crates/riff-app/src/system/update_install.rs`.
 
-Tant que la constante est vide (état actuel : aucune clé de production n'existe), toute mise à jour est refusée (`the_provisional_production_key_refuses_everything`). Après remplacement, ce test échoue volontairement : le remplacer par un test qui vérifie que la clé de production se décode (`PublicKey::from_base64`). La clé doit être embarquée dans une version publiée avant de signer les versions suivantes : une version déjà installée ne reconnaît que la clé qu'elle contient.
+Clé de production embarquée depuis la 1.0.0 (identifiant `4050AF6BFAC3CAB6`), contrôlée par `the_production_key_decodes_and_refuses_test_signatures`. Une constante vide fait refuser toute mise à jour. La clé doit être embarquée dans une version publiée avant de signer les versions suivantes : une version déjà installée ne reconnaît que la clé qu'elle contient.
 
 ## 5. Signer l'installeur du brouillon
 

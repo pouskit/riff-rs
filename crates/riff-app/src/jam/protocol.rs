@@ -1,6 +1,7 @@
 //! Fil du jam : trames, messages, pistes diffusées et assainissement des données reçues.
 
-use super::{MAX_ID_CHARS, MAX_NAME_CHARS, MAX_TEXT_CHARS, MAX_URL_CHARS};
+use super::{MAX_ID_CHARS, MAX_NAME_CHARS, MAX_PARTICIPANTS, MAX_TEXT_CHARS, MAX_URL_CHARS};
+use crate::audio_prefs::{Sound, is_default_preset};
 use crate::stream::effective_platform;
 use crate::user_data::Track;
 use serde::de::DeserializeOwned;
@@ -9,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Borne d'une trame avant admission.
 pub const MAX_HELLO_FRAME: usize = 4 * 1024;
 /// Borne d'une trame après admission.
@@ -87,8 +88,16 @@ struct Envelope<'a, T> {
 
 /// Corps JSON d'un message, prêt à être cloné vers chaque destinataire.
 pub fn encode<T: Serialize>(message: &T) -> Result<Arc<[u8]>, serde_json::Error> {
+  encode_versioned(message, PROTOCOL_VERSION)
+}
+
+/// Comme [`encode`], avec une version d'enveloppe choisie : le refus de version doit rester lisible par le pair.
+pub fn encode_versioned<T: Serialize>(
+  message: &T,
+  version: u32,
+) -> Result<Arc<[u8]>, serde_json::Error> {
   serde_json::to_vec(&Envelope {
-    v: PROTOCOL_VERSION,
+    v: version,
     body: message,
   })
   .map(Arc::from)
@@ -415,6 +424,125 @@ pub struct Current {
   pub track: WireTrack,
 }
 
+/// Effets partagés par tout le jam : ceux qui changent le son ou le défilement. Volume, égaliseur, HQ et
+/// normalisation restent personnels.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct JamSound {
+  pub speed: f32,
+  pub speed_pitch: f32,
+  pub pitch: f32,
+  pub reverb: f32,
+  pub distortion: f32,
+  pub echo: f32,
+}
+
+impl Default for JamSound {
+  fn default() -> Self {
+    Self::from_sound(&Sound::default())
+  }
+}
+
+impl JamSound {
+  #[must_use]
+  pub const fn from_sound(sound: &Sound) -> Self {
+    Self {
+      speed: sound.speed,
+      speed_pitch: sound.speed_pitch,
+      pitch: sound.pitch,
+      reverb: sound.reverb,
+      distortion: sound.distortion,
+      echo: sound.echo,
+    }
+  }
+
+  /// `base` dont les champs partagés sont remplacés ; le reste (volume, égaliseur) est gardé.
+  #[must_use]
+  pub const fn apply_to(self, mut base: Sound) -> Sound {
+    base.speed = self.speed;
+    base.speed_pitch = self.speed_pitch;
+    base.pitch = self.pitch;
+    base.reverb = self.reverb;
+    base.distortion = self.distortion;
+    base.echo = self.echo;
+    base
+  }
+
+  /// Valeurs reçues d'un pair : bornées comme les curseurs, une valeur non finie reprend le défaut.
+  #[must_use]
+  pub fn sanitized(self) -> Self {
+    Self::from_sound(&self.apply_to(Sound::default()).clamped())
+  }
+
+  /// Facteur d'écoulement de la position, celui du moteur : le pitch change aussi la vitesse.
+  #[must_use]
+  pub fn rate(self) -> f64 {
+    let rate = self
+      .apply_to(Sound::default())
+      .to_engine()
+      .tempo()
+      .speed_factor();
+    if rate.is_finite() {
+      rate.max(MIN_RATE)
+    } else {
+      1.0
+    }
+  }
+}
+
+/// Plus petit facteur de vitesse admis dans les calculs de position (garde-fou, les curseurs vont à 0,25).
+const MIN_RATE: f64 = 0.05;
+/// Acquittements portés par un état : un par participant, hôte exclu.
+const MAX_ACKS: usize = MAX_PARTICIPANTS;
+
+/// Effets du jam tels que l'hôte les a appliqués.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SharedSound {
+  /// Compteur de l'hôte, +1 à chaque changement.
+  pub sv: u64,
+  /// Participant qui a réglé les effets.
+  pub by: u32,
+  /// Transition douce demandée par l'auteur.
+  pub smooth: bool,
+  /// Préréglage par défaut qui a produit ces valeurs.
+  #[serde(skip_serializing_if = "Option::is_none")]
+  pub preset: Option<String>,
+  pub sound: JamSound,
+  /// Dernier identifiant de commande `Sound` appliqué pour chaque participant.
+  pub acks: Vec<(u32, u64)>,
+}
+
+impl SharedSound {
+  /// État reçu de l'hôte, jamais cru : valeurs bornées, préréglage connu, acquittements en nombre borné.
+  #[must_use]
+  pub fn sanitized(mut self) -> Self {
+    self.sound = self.sound.sanitized();
+    self.preset = self.preset.filter(|id| is_default_preset(id));
+    self.acks.truncate(MAX_ACKS);
+    self
+  }
+
+  /// Dernier acquittement de `participant`.
+  #[must_use]
+  pub fn ack_of(&self, participant: u32) -> Option<u64> {
+    self
+      .acks
+      .iter()
+      .find(|(id, _)| *id == participant)
+      .map(|(_, ack)| *ack)
+  }
+
+  /// Note que la commande `id` de `participant` est appliquée.
+  pub fn acknowledge(&mut self, participant: u32, id: u64) {
+    self.acks.retain(|(who, _)| *who != participant);
+    self.acks.push((participant, id));
+    if self.acks.len() > MAX_ACKS {
+      self.acks.remove(0);
+    }
+  }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PlaybackState {
   pub pv: u64,
@@ -427,6 +555,8 @@ pub struct PlaybackState {
   pub shuffle: bool,
   pub repeat: bool,
   pub fade: bool,
+  #[serde(default)]
+  pub sound: SharedSound,
 }
 
 /// Commande d'un participant, appliquée par l'hôte.
@@ -435,17 +565,47 @@ pub struct PlaybackState {
 pub enum Op {
   Play,
   Pause,
-  Seek { pos_ms: u64 },
-  Next { from: Option<u64> },
-  Prev { from: Option<u64> },
-  Add { tracks: Vec<WireTrack>, next: bool },
-  PlayNow { tracks: Vec<WireTrack> },
-  PlayEntry { uid: u64 },
-  Remove { uids: Vec<u64> },
-  Move { uid: u64, to: u32 },
+  Seek {
+    pos_ms: u64,
+  },
+  Next {
+    from: Option<u64>,
+  },
+  Prev {
+    from: Option<u64>,
+  },
+  Add {
+    tracks: Vec<WireTrack>,
+    next: bool,
+  },
+  PlayNow {
+    tracks: Vec<WireTrack>,
+  },
+  PlayEntry {
+    uid: u64,
+  },
+  Remove {
+    uids: Vec<u64>,
+  },
+  Move {
+    uid: u64,
+    to: u32,
+  },
   Clear,
-  Shuffle { on: bool },
-  Repeat { on: bool },
+  Shuffle {
+    on: bool,
+  },
+  Repeat {
+    on: bool,
+  },
+  /// Effets partagés. `preset` n'est retenu que s'il est un préréglage par défaut.
+  Sound {
+    sound: JamSound,
+    #[serde(default)]
+    smooth: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preset: Option<String>,
+  },
 }
 
 /// Messages de l'invité vers l'hôte.

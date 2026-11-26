@@ -386,12 +386,14 @@ pub enum Effect {
   JamHost {
     name: String,
     relay: Option<String>,
+    rendezvous: Option<String>,
   },
   /// Rejoint le jam du code d'invitation.
   JamJoin {
     ticket: String,
     name: String,
     relay: Option<String>,
+    rendezvous: Option<String>,
   },
   /// Message vers la session réseau en cours.
   JamSend(crate::jam::JamOut),
@@ -2626,7 +2628,7 @@ impl Program {
     &mut self,
     link: crate::jam::JamLink,
     session: impl std::future::Future<Output = crate::jam::EndCause> + Send + 'static,
-    invalid_relay: bool,
+    invalid: crate::jam::InvalidUrls,
   ) -> Task<Message> {
     let generation = self.jam_generation;
     let (task, handle) = Task::future(async move {
@@ -2642,17 +2644,27 @@ impl Program {
     }) {
       old.handle.abort();
     }
-    if invalid_relay {
-      let text = self
-        .app
-        .i18n
-        .t("Invalid relay URL, using the default relays");
-      return Task::batch([
-        task,
-        Task::done(Message::ShowToast(text, ToastKind::Error, None)),
-      ]);
+    let toasts: Vec<_> = [
+      (invalid.relay, "Invalid relay URL, using the default relays"),
+      (
+        invalid.rendezvous,
+        "Invalid rendezvous URL, short codes are unavailable",
+      ),
+    ]
+    .into_iter()
+    .filter(|(flagged, _)| *flagged)
+    .map(|(_, key)| {
+      Task::done(Message::ShowToast(
+        self.app.i18n.t(key),
+        ToastKind::Error,
+        None,
+      ))
+    })
+    .collect();
+    if toasts.is_empty() {
+      return task;
     }
-    task
+    Task::batch(std::iter::once(task).chain(toasts))
   }
 
   /// Effets qui touchent à l'état de `Program`, puis les autres.
@@ -2689,8 +2701,12 @@ impl Program {
           Err("aucun plugin disponible".to_string()),
         ))),
       },
-      Effect::JamHost { name, relay } => {
-        let (transport, invalid) = crate::jam::transport(relay.as_deref());
+      Effect::JamHost {
+        name,
+        relay,
+        rendezvous,
+      } => {
+        let (transport, invalid) = crate::jam::transport(relay.as_deref(), rendezvous.as_deref());
         self.jam_generation += 1;
         let (link, session) = crate::jam::start_host(transport, name, self.jam_generation);
         self.launch_jam(link, session, invalid)
@@ -2699,8 +2715,9 @@ impl Program {
         ticket,
         name,
         relay,
+        rendezvous,
       } => {
-        let (transport, invalid) = crate::jam::transport(relay.as_deref());
+        let (transport, invalid) = crate::jam::transport(relay.as_deref(), rendezvous.as_deref());
         self.jam_generation += 1;
         let (link, session) = crate::jam::start_guest(transport, ticket, name, self.jam_generation);
         self.launch_jam(link, session, invalid)

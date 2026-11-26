@@ -1,10 +1,12 @@
 # Changelog
 
-Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Numérotation : [SemVer](https://semver.org/lang/fr/). Rien n'est publié à ce jour : la section `Unreleased` prépare `1.0.0-rc.1`, et la version du code est `1.0.0-rc.1` (source unique : `[workspace.package].version`). Les liens de comparaison entre versions seront ajoutés avec la première release.
+Format : [Keep a Changelog](https://keepachangelog.com/fr/1.1.0/). Numérotation : [SemVer](https://semver.org/lang/fr/). Source unique de la version : `[workspace.package].version`.
 
 ## [Unreleased]
 
-Prépare `1.0.0-rc.1`.
+## [1.0.0] - 2026-11-26
+
+Première version publique.
 
 ### Added
 - Application native en Rust (iced 0.14.0) : portage de Riff 44.1.1, sans Electron, sans navigateur embarqué.
@@ -39,6 +41,7 @@ Prépare `1.0.0-rc.1`.
 - L'encart Spotify n'est masqué que lorsqu'une playlist existe ; son bouton ouvre Réglages, Intégrations.
 - Boutons en glyphes Unicode, pas les icônes de Riff.
 - `riff-app lyrics` affiche la ligne entière, pas mot à mot.
+- Discord : « Show artist in Discord status » est remplacé par des réglages de l'activité (Réglages, Intégrations) : « Discord status » (Riff, Artist, Track, Track - Artist, repris de l'ancien interrupteur), « Discord time » (barre de progression, temps écoulé, masqué), « Discord cover », « Show when paused » (coupé par défaut, comme Riff), « Album on cover hover ». Un titre sans pochette publique montre l'icône de Riff hébergée par Discord. Un saut de lecture met le minutage à jour. Libellés traduits en `fr`, `ru` et `uk`, ces deux derniers sans relecture.
 - Chaînes ajoutées hors Riff : « File too large (20 MB max) », « Could not save the setting. » et 47 chaînes de l'écran d'import et du rapport, traduites en `ru` et `uk` sans relecture.
 
 ### Known issues
@@ -49,7 +52,6 @@ Prépare `1.0.0-rc.1`.
 - Éditeur de plugins : pas de numéros de ligne ni de surlignage de la ligne courante ; ouverture limitée à 128 Ko.
 - Plugins : l'élargissement par recherche de `better-shuffle` ne se déclenche jamais ; l'apprentissage des titres passés (`skipSec`) n'est pas porté.
 - Kugou et NetEase sont interrogés en `http://` clair.
-- Aucun paquet ni installeur : l'empaquetage (`cargo-packager`), la mise à jour vérifiée par signature et le workflow de release sont à venir.
 - Les paquets ne seront pas signés (ni Authenticode, ni Developer ID) : voir le README.
 - Traductions `ru` et `uk` non relues.
 
@@ -57,3 +59,6 @@ Prépare `1.0.0-rc.1`.
 - Zéro télémétrie, vérifiée par `deny.toml` et un test.
 - Secrets (jetons Spotify, Last.fm, Google, clé DeepL) dans le coffre du système.
 - Hôtes réseau limités à une liste fixe ; téléchargements d'outils vérifiés par SHA-256.
+
+[Unreleased]: https://github.com/pouskit/riff-rs/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/pouskit/riff-rs/releases/tag/v1.0.0

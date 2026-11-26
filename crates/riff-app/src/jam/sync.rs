@@ -65,7 +65,13 @@ pub fn host_to_local(at_ms: u64, offset_ms: i64, guest_epoch: Instant, now: Inst
     .unwrap_or(now)
 }
 
-/// Position que doit avoir l'invité : `pos + (now - anchor)` en lecture, bornée à `duration` ; figée sinon.
+/// Temps de lecture écoulé en temps média : `elapsed × rate`.
+fn scaled(elapsed: Duration, rate: f64) -> Duration {
+  Duration::try_from_secs_f64(elapsed.as_secs_f64() * rate).unwrap_or(Duration::MAX)
+}
+
+/// Position que doit avoir l'invité : `pos + (now - anchor) × rate` en lecture, bornée à `duration` ; figée
+/// sinon. `rate` est le facteur de vitesse du moteur de l'hôte.
 #[must_use]
 pub fn expected_position(
   pos_ms: u64,
@@ -73,13 +79,14 @@ pub fn expected_position(
   playing: bool,
   now: Instant,
   duration: Option<Duration>,
+  rate: f64,
 ) -> Duration {
   let pos = Duration::from_millis(pos_ms);
   let position = if playing {
     if now >= anchor {
-      pos.saturating_add(now.duration_since(anchor))
+      pos.saturating_add(scaled(now.duration_since(anchor), rate))
     } else {
-      pos.saturating_sub(anchor.duration_since(now))
+      pos.saturating_sub(scaled(anchor.duration_since(now), rate))
     }
   } else {
     pos
@@ -100,16 +107,24 @@ pub fn needs_correction(
     && last.is_none_or(|last| now.saturating_duration_since(last) > CORRECTION_COOLDOWN)
 }
 
-/// Position de l'hôte à `now` : dernière position du moteur plus le temps écoulé en lecture, au plus 1 s.
+/// Position de l'hôte à `now` : dernière position du moteur plus le temps écoulé en lecture (au plus 1 s)
+/// multiplié par `rate`.
 #[must_use]
 pub fn host_position(
   position: Duration,
   position_at: Option<Instant>,
   playing: bool,
   now: Instant,
+  rate: f64,
 ) -> Duration {
   match position_at {
-    Some(at) if playing => position + now.saturating_duration_since(at).min(MAX_EXTRAPOLATION),
+    Some(at) if playing => {
+      position
+        + scaled(
+          now.saturating_duration_since(at).min(MAX_EXTRAPOLATION),
+          rate,
+        )
+    }
     _ => position,
   }
 }

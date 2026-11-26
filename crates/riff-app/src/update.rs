@@ -13,7 +13,7 @@ use crate::ui::{
   ArtistCard, ArtistTab, ListId, Modal, PlayerMessage, ReplyTag, RowPress, SearchFilter,
   SidebarDrag, SidebarTab, TrackCommand, UiMessage,
 };
-use crate::user_data::{DailyMix, DailyMixes, SavedAlbum, SortMode, Track, TrackCache};
+use crate::user_data::{DailyMix, DailyMixes, SavedAlbum, SortMode, Track, TrackCache, UserData};
 use crate::widgets::menu::{Menu, MenuItem};
 use crate::widgets::toast::ToastKind;
 use riff_audio::{AudioError, Event as AudioEvent};
@@ -202,6 +202,7 @@ impl App {
       .data
       .history
       .iter()
+      .filter(|track| !self.data.is_blocked(track))
       .filter(|track| seen.insert(track.canonical_id(&self.data.platform)))
       .take(QUICK_RECENT)
       .collect()
@@ -276,10 +277,14 @@ impl App {
     if self.jam.is_some() {
       return self.jam_play_now(list);
     }
+    let data = &self.data;
+    let Some(start) = list.iter().position(|track| !data.is_blocked(track)) else {
+      return vec![toast_effect("All these tracks are blocked")];
+    };
     self.player.radio = false;
     self.player.my_wave = false;
-    let first = list[0].clone();
-    self.replace_queue(first, list, 0, Some(scope));
+    let first = list[start].clone();
+    self.replace_queue(first, list, start, Some(scope));
     self.start_current(None)
   }
 
@@ -427,7 +432,10 @@ impl App {
     self.ui.autoplay_loading = false;
     self.ui.autoplay_waiting = false;
     self.ui.radio_waiting = false;
-    self.data.record_played(&track, now_ms());
+    // Un titre bloqué joué dans le jam d'un autre n'entre pas dans l'historique.
+    if self.jam.is_none() || !self.data.is_blocked(&track) {
+      self.data.record_played(&track, now_ms());
+    }
     // `playTrack` rappelle `renderHistoryView` quand l'historique est affiché (`app.js:4572`).
     self.entered_rows(Screen::History);
     let mut effects = vec![
@@ -614,7 +622,8 @@ impl App {
     vec![Effect::PrepareAutoplay { artists, payload }]
   }
 
-  /// `buildAutoplayCandidates` : la lecture auto ne repropose ni la file, ni l'historique récent, ni un titre bloqué.
+  /// `buildAutoplayCandidates` : la lecture auto ne repropose ni la file, ni l'historique récent, ni un titre aimé ou
+  /// bloqué.
   fn usable_autoplay(&self, found: Vec<Track>) -> Vec<Track> {
     let platform = &self.data.platform;
     let key_of = |track: &Track| {
@@ -627,7 +636,8 @@ impl App {
       .player
       .queue
       .iter()
-      .chain(self.data.history.iter().take(60));
+      .chain(self.data.history.iter().take(60))
+      .chain(self.data.favorites.iter());
     let mut ids: HashSet<String> = HashSet::new();
     let mut keys: HashSet<String> = HashSet::new();
     for track in known {
@@ -741,6 +751,11 @@ impl App {
       .filter_map(|track| track.id.clone())
       .collect();
     let mut keys: HashSet<String> = self.player.queue[tail..].iter().map(key_of).collect();
+    // Les titres aimés sont déjà connus : la radio ne les repropose pas.
+    for liked in &self.data.favorites {
+      ids.extend(liked.id.clone());
+      keys.insert(key_of(liked));
+    }
     let fresh: Vec<Track> = incoming
       .into_iter()
       .filter(|track| {
@@ -749,6 +764,7 @@ impl App {
           .as_deref()
           .is_some_and(|title| !title.is_empty())
           && (track.id.is_some() || track.url.is_some())
+          && !self.data.is_blocked(track)
           && track.id.as_ref().is_none_or(|id| ids.insert(id.clone()))
           && keys.insert(key_of(track))
       })
@@ -1200,7 +1216,13 @@ impl App {
   /// Corps de « précédent » : recommence le titre ou revient au précédent.
   pub(crate) fn go_prev(&mut self) -> Vec<Effect> {
     let platform = self.platform();
-    match self.player.prev(self.playback.position, &platform) {
+    let in_jam = self.jam.is_some();
+    let data = &self.data;
+    match self
+      .player
+      .prev(self.playback.position, &platform, &|track| {
+        !in_jam && data.is_blocked(track)
+      }) {
       PrevStep::Nothing => Vec::new(),
       PrevStep::Restart => {
         self.playback.position = Duration::ZERO;
@@ -1240,11 +1262,23 @@ impl App {
     if let Some(blocked) = self.jam_unavailable() {
       return blocked;
     }
-    let Some(track) = self.ui.home.wave.get(start).cloned() else {
+    let data = &self.data;
+    let wave = &self.ui.home.wave;
+    // Une carte bloquée depuis son affichage ne lance rien : la radio démarre sur la suivante.
+    let Some(first) = (start..wave.len()).find(|&at| !data.is_blocked(&wave[at])) else {
       return Vec::new();
     };
-    let queue = self.ui.home.wave.clone();
-    self.replace_queue(track, queue, start, None);
+    let track = wave[first].clone();
+    let at = wave[..first]
+      .iter()
+      .filter(|card| !data.is_blocked(card))
+      .count();
+    let queue: Vec<Track> = wave
+      .iter()
+      .filter(|card| !data.is_blocked(card))
+      .cloned()
+      .collect();
+    self.replace_queue(track, queue, at, None);
     self.player.radio = true;
     self.player.my_wave = my_wave;
     self.start_current(None)
@@ -1905,11 +1939,7 @@ impl App {
       }
       TrackCommand::RemoveLocal => self.remove_local(std::slice::from_ref(&track)),
       TrackCommand::BlockTrack => {
-        let was_current_blocked = self
-          .player
-          .current
-          .as_ref()
-          .is_some_and(|current| self.data.is_track_blocked(current));
+        let was_current_blocked = self.is_current_blocked(UserData::is_track_blocked);
         let was_favorite = self.data.is_favorite(&track);
         let blocked = self.data.toggle_block_track(&track);
         // Le blocage retire le titre des favoris : même rafraîchissement qu'un retrait normal.
@@ -1924,35 +1954,92 @@ impl App {
             "Unblocked track"
           }),
         ];
-        // Dislike = skip du titre en cours, sauf dans un jam (la file est commune).
-        let is_current_now = self
-          .player
-          .current
-          .as_ref()
-          .is_some_and(|current| self.data.is_track_blocked(current));
-        if blocked && is_current_now && !was_current_blocked && self.jam.is_none() {
-          let was_playing = self.playback.is_playing;
-          effects.extend(self.go_next(false, None));
-          // Plus rien à jouer (tout est bloqué) : le moteur audio doit s'arrêter.
-          if was_playing && !self.playback.is_playing {
-            effects.push(Effect::AudioPause);
-            effects.push(self.state_effect(false));
-          }
+        if blocked {
+          self.purge_blocked_from_home();
+          effects.extend(
+            self.skip_current_if_newly_blocked(was_current_blocked, UserData::is_track_blocked),
+          );
         }
         effects
       }
       TrackCommand::BlockArtist => {
         let name = track.artist.clone().unwrap_or_default();
-        let blocked = self.data.toggle_block_artist(&name);
-        let text = if blocked {
-          format!("Blocked artist \"{}\"", name.trim())
-        } else {
-          format!("Unblocked artist \"{}\"", name.trim())
-        };
-        vec![self.data_changed(), toast_effect(&text)]
+        self.block_artist(&name)
       }
       TrackCommand::OpenArtist(name) => self.open_artist(&name),
     }
+  }
+
+  /// Le titre en cours est bloqué selon `blocked` : `is_track_blocked` pour un dislike, `is_blocked` pour un artiste.
+  fn is_current_blocked(&self, blocked: fn(&UserData, &Track) -> bool) -> bool {
+    self
+      .player
+      .current
+      .as_ref()
+      .is_some_and(|current| blocked(&self.data, current))
+  }
+
+  /// Dislike = skip du titre en cours, sauf dans un jam (la file est commune).
+  fn skip_current_if_newly_blocked(
+    &mut self,
+    was_current_blocked: bool,
+    blocked: fn(&UserData, &Track) -> bool,
+  ) -> Vec<Effect> {
+    if was_current_blocked || self.jam.is_some() || !self.is_current_blocked(blocked) {
+      return Vec::new();
+    }
+    let was_playing = self.playback.is_playing;
+    let mut effects = self.go_next(false, None);
+    // Plus rien à jouer (tout est bloqué) : le moteur audio doit s'arrêter.
+    if was_playing && !self.playback.is_playing {
+      effects.push(Effect::AudioPause);
+      effects.push(self.state_effect(false));
+    }
+    effects
+  }
+
+  /// Retire des listes de l'accueil (vague, tendances, mixes du jour) ce que le blocage vient d'exclure.
+  fn purge_blocked_from_home(&mut self) {
+    let data = &self.data;
+    self.ui.home.wave.retain(|track| !data.is_blocked(track));
+    self
+      .ui
+      .home
+      .trending
+      .retain(|track| !data.is_blocked(track));
+    if let Some(mut mixes) = self.data.daily_mixes.take() {
+      for mix in &mut mixes.mixes {
+        mix.tracks.retain(|track| !self.data.is_blocked(track));
+        mix
+          .artists
+          .retain(|name| !self.data.is_artist_blocked(name));
+      }
+      // Même seuil qu'à la génération : un mix réduit ne reste pas affiché (et en cache) toute la journée.
+      mixes.mixes.retain(|mix| mix.tracks.len() >= MIX_MIN_TRACKS);
+      self.data.daily_mixes = Some(mixes);
+    }
+  }
+
+  /// Bloque ou débloque un artiste. Le bloquer retire ses titres des titres aimés et de l'accueil, arrête son suivi
+  /// et passe au titre suivant si le titre en cours est de lui.
+  fn block_artist(&mut self, name: &str) -> Vec<Effect> {
+    let was_current_blocked = self.is_current_blocked(UserData::is_blocked);
+    let favorites = self.data.favorites.len();
+    let blocked = self.data.toggle_block_artist(name);
+    let text = if blocked {
+      format!("Blocked artist \"{}\"", name.trim())
+    } else {
+      format!("Unblocked artist \"{}\"", name.trim())
+    };
+    let mut effects = vec![self.data_changed(), toast_effect(&text)];
+    if blocked {
+      if self.data.favorites.len() != favorites {
+        self.entered_rows(Screen::Liked);
+      }
+      self.purge_blocked_from_home();
+      effects.extend(self.skip_current_if_newly_blocked(was_current_blocked, UserData::is_blocked));
+    }
+    effects
   }
 
   fn remove_local(&mut self, tracks: &[Track]) -> Vec<Effect> {
@@ -2731,6 +2818,10 @@ Platform: {}
         artists,
         tracks,
       } => {
+        let tracks: Vec<Track> = tracks
+          .into_iter()
+          .filter(|track| !self.data.is_blocked(track))
+          .collect();
         if tracks.len() < MIX_MIN_TRACKS {
           return Vec::new();
         }
@@ -2826,13 +2917,7 @@ Platform: {}
       }
       UiMessage::ArtistBlock => {
         let name = self.ui.artist.name.clone();
-        let blocked = self.data.toggle_block_artist(&name);
-        let text = if blocked {
-          format!("Blocked artist \"{name}\"")
-        } else {
-          format!("Unblocked artist \"{name}\"")
-        };
-        vec![self.data_changed(), toast_effect(&text)]
+        self.block_artist(&name)
       }
       UiMessage::ArtistBio => {
         let (title, body) = (self.ui.artist.name.clone(), self.ui.artist.bio.clone());
@@ -3362,7 +3447,7 @@ Platform: {}
   }
 
   fn open_mix(&mut self, index: usize) -> Vec<Effect> {
-    let Some(mix) = self
+    let Some(mut mix) = self
       .data
       .daily_mixes
       .as_ref()
@@ -3371,6 +3456,8 @@ Platform: {}
     else {
       return Vec::new();
     };
+    // Un mix gardé pour la journée peut contenir un titre bloqué depuis.
+    mix.tracks.retain(|track| !self.data.is_blocked(track));
     let title = mix
       .title
       .clone()

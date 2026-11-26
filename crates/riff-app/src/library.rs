@@ -5,8 +5,10 @@ use crate::user_data::{
   BlockedTrack, FavoriteArtist, Playlist, SavedAlbum, SearchEntry, Track, UserData,
 };
 use regex::Regex;
+use riff_core::discovery::{MULTI_ARTIST_EXCEPTIONS, artist_parts};
 use riff_core::util::{get_track_normalized_key, strip_youtube_topic};
 use serde_json::{Map, Value, json};
+use std::cell::RefCell;
 use std::collections::hash_map::Entry as MapEntry;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -41,41 +43,36 @@ static AUTOPLAY_SEPARATOR: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r"(?i),|&| feat\.? | ft\.? | x ").expect("regex valide"));
 static ARTIST_NAME_NOISE: LazyLock<Regex> =
   LazyLock::new(|| Regex::new(r"(?i) - Topic|VEVO|Official|Records").expect("regex valide"));
-const MULTI_ARTIST_EXCEPTIONS: [&str; 26] = [
-  "simon & garfunkel",
-  "hall & oates",
-  "brooks & dunn",
-  "tegan and sara",
-  "earth, wind & fire",
-  "crosby, stills & nash",
-  "crosby, stills, nash & young",
-  "mumford & sons",
-  "florence + the machine",
-  "florence & the machine",
-  "belle & sebastian",
-  "belle and sebastian",
-  "emerson, lake & palmer",
-  "kc & the sunshine band",
-  "kool & the gang",
-  "sly & the family stone",
-  "echo & the bunnymen",
-  "coheed and cambria",
-  "angus & julia stone",
-  "above & beyond",
-  "chase & status",
-  "gnarls barkley",
-  "twenty one pilots",
-  "ac/dc",
-  "t.a.t.u.",
-  "tyler, the creator",
-];
 
-/// `normalizeArtistName`.
+/// Taille maximale du cache de `normalize_artist_name`.
+const NORMALIZED_ARTISTS_MAX: usize = 1024;
+
+thread_local! {
+  static NORMALIZED_ARTISTS: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+}
+
+#[cfg(test)]
+fn normalized_artists_len() -> usize {
+  NORMALIZED_ARTISTS.with_borrow(HashMap::len)
+}
+
+/// `normalizeArtistName`. Appelée par titre et par entrée de blocage à chaque vue : les résultats sont mis en cache
+/// (borné, vidé quand il est plein).
 #[must_use]
 pub fn normalize_artist_name(name: &str) -> String {
+  if let Some(hit) = NORMALIZED_ARTISTS.with_borrow(|cache| cache.get(name).cloned()) {
+    return hit;
+  }
   let text = ARTIST_NOISE.replace_all(name, "");
   let text = ARTIST_SYMBOLS.replace_all(&text, " ");
-  SPACES.replace_all(&text, " ").trim().to_lowercase()
+  let normalized = SPACES.replace_all(&text, " ").trim().to_lowercase();
+  NORMALIZED_ARTISTS.with_borrow_mut(|cache| {
+    if cache.len() >= NORMALIZED_ARTISTS_MAX {
+      cache.clear();
+    }
+    cache.insert(name.to_string(), normalized.clone());
+  });
+  normalized
 }
 
 /// `normalizeMatchText`.
@@ -394,6 +391,7 @@ impl UserData {
       false
     } else {
       self.unblock_track(track);
+      self.unblock_artists_of(track.artist.as_deref().unwrap_or(""));
       self.favorites.insert(
         0,
         Track {
@@ -411,6 +409,7 @@ impl UserData {
     for track in tracks {
       if !self.is_favorite(track) {
         self.unblock_track(track);
+        self.unblock_artists_of(track.artist.as_deref().unwrap_or(""));
         self.favorites.insert(
           0,
           Track {
@@ -508,9 +507,19 @@ impl UserData {
     let key = (track.artist.is_some() && track.title.is_some()).then(|| track_key(track));
     let title = track.title.as_deref().unwrap_or("").trim().to_lowercase();
     let artist = normalize_artist_name(track.artist.as_deref().unwrap_or(""));
+    let path = track.path.as_deref().filter(|path| !path.is_empty());
+    // Un fichier local sans artiste n'a d'identité que par son id ou son chemin : le titre seul en nomme plusieurs.
+    let local_anonymous = track.is_local() && artist.is_empty();
     self.blocked_tracks.iter().position(|blocked| {
       if track.id.is_some() && track.id != Some(String::new()) && blocked.id == track.id {
         return true;
+      }
+      if path.is_some() && blocked.path.as_deref() == path {
+        return true;
+      }
+      let other = normalize_artist_name(blocked.artist.as_deref().unwrap_or(""));
+      if local_anonymous || (blocked.path.is_some() && other.is_empty()) {
+        return false;
       }
       if key.is_some() && blocked.key == key {
         return true;
@@ -520,7 +529,6 @@ impl UserData {
           .title
           .as_deref()
           .is_some_and(|text| text.trim().to_lowercase() == title);
-      let other = normalize_artist_name(blocked.artist.as_deref().unwrap_or(""));
       same_title && (artist.is_empty() || other.is_empty() || artist == other)
     })
   }
@@ -538,7 +546,32 @@ impl UserData {
       || track
         .artist
         .as_deref()
-        .is_some_and(|artist| self.is_artist_blocked(artist))
+        .is_some_and(|artist| self.is_artist_text_blocked(artist))
+  }
+
+  /// Le texte d'artistes d'un titre, ou l'un des artistes qu'il nomme, est bloqué.
+  fn is_artist_text_blocked(&self, text: &str) -> bool {
+    !self.blocked_artists.is_empty()
+      && (self.is_artist_blocked(text)
+        || artist_parts(text)
+          .iter()
+          .any(|part| self.is_artist_blocked(part)))
+  }
+
+  /// Débloque l'artiste d'un titre aimé, ou chacun de ses artistes.
+  fn unblock_artists_of(&mut self, text: &str) {
+    if self.blocked_artists.is_empty() {
+      return;
+    }
+    let mut names = vec![normalize_artist_name(text)];
+    names.extend(
+      artist_parts(text)
+        .iter()
+        .map(|part| normalize_artist_name(part)),
+    );
+    self
+      .blocked_artists
+      .retain(|blocked| !names.contains(&normalize_artist_name(blocked)));
   }
 
   /// `toggleBlockTrack`. Renvoie `true` si le titre est désormais bloqué (et sorti des favoris).
@@ -552,6 +585,7 @@ impl UserData {
       id: track.id.clone(),
       title: track.title.clone(),
       artist: track.artist.clone(),
+      path: track.path.clone().filter(|_| track.is_local()),
       ..BlockedTrack::default()
     });
     // Après l'insertion : retire aussi les favoris que l'entrée couvre (autre id, même artiste-titre).
@@ -583,6 +617,15 @@ impl UserData {
       return false;
     }
     self.blocked_artists.push(clean.to_string());
+    // Un artiste bloqué n'est ni suivi ni dans les titres aimés.
+    if self.is_followed(clean) {
+      self.toggle_follow(clean, None, None);
+    }
+    let favorites = std::mem::take(&mut self.favorites);
+    self.favorites = favorites
+      .into_iter()
+      .filter(|favorite| !self.is_blocked(favorite))
+      .collect();
     true
   }
 
@@ -847,6 +890,7 @@ impl UserData {
       return false;
     }
     self.unfollowed_artists.retain(|other| !same(other));
+    self.unblock_artists_of(clean);
     self.favorite_artists.push(FavoriteArtist {
       name: clean.to_string(),
       avatar: avatar.map(str::to_string),
@@ -870,7 +914,10 @@ impl UserData {
       .iter()
       .filter(|artist| {
         let lower = artist.name.trim().to_lowercase();
-        !lower.is_empty() && !unfollowed.contains(&lower) && seen.insert(lower)
+        !lower.is_empty()
+          && !unfollowed.contains(&lower)
+          && !self.is_artist_blocked(&artist.name)
+          && seen.insert(lower)
       })
       .collect()
   }
@@ -1592,8 +1639,18 @@ pub fn plan_mixes(profile: &Value) -> Vec<MixBucket> {
 mod tests {
   use super::{
     ArtistToken::{Artist, Sep},
-    split_artist_tokens,
+    NORMALIZED_ARTISTS_MAX, normalize_artist_name, normalized_artists_len, split_artist_tokens,
   };
+
+  #[test]
+  fn the_artist_name_cache_stays_bounded_and_exact() {
+    for n in 0..NORMALIZED_ARTISTS_MAX * 2 {
+      let name = format!("Artist {n} (Official)");
+      assert_eq!(normalize_artist_name(&name), format!("artist {n}"));
+      assert_eq!(normalize_artist_name(&name), format!("artist {n}"));
+      assert!(normalized_artists_len() <= NORMALIZED_ARTISTS_MAX);
+    }
+  }
 
   fn tokens(raw: &str) -> Vec<super::ArtistToken> {
     split_artist_tokens(raw)
@@ -1753,6 +1810,102 @@ mod tests {
     assert!(!data.is_artist_blocked("  "));
     assert!(!data.toggle_block_artist("DAFT PUNK"));
     assert!(data.blocked_artists.is_empty());
+  }
+
+  #[test]
+  fn a_blocked_artist_is_blocked_inside_a_multi_artist_title() {
+    let mut data = data();
+    data.toggle_block_artist("Pharrell");
+    assert!(data.is_blocked(&track("a", "Daft Punk, Pharrell", "T")));
+    assert!(data.is_blocked(&track("b", "Daft Punk feat. Pharrell", "T")));
+    assert!(!data.is_blocked(&track("c", "Daft Punk", "T")));
+  }
+
+  #[test]
+  fn a_known_duo_is_blocked_whole_or_not_at_all() {
+    let mut data = data();
+    data.toggle_block_artist("Garfunkel");
+    assert!(!data.is_blocked(&track("a", "Simon & Garfunkel", "T")));
+    data.toggle_block_artist("Simon & Garfunkel");
+    assert!(data.is_blocked(&track("a", "Simon & Garfunkel", "T")));
+  }
+
+  fn local_file(id: &str, path: &str) -> Track {
+    Track {
+      id: Some(id.into()),
+      title: Some("Intro".into()),
+      platform: Some("local".into()),
+      path: Some(path.into()),
+      ..Track::default()
+    }
+  }
+
+  #[test]
+  fn blocking_a_local_file_without_artist_does_not_reach_the_other_files_of_the_same_title() {
+    let mut data = data();
+    let first = local_file("l1", "C:/m/a/intro.mp3");
+    let second = local_file("l2", "C:/m/b/intro.mp3");
+    assert!(data.toggle_block_track(&first));
+    assert!(data.is_track_blocked(&first));
+    assert!(!data.is_track_blocked(&second));
+    assert!(data.toggle_block_track(&second));
+    assert!(!data.toggle_block_track(&first));
+    assert!(!data.is_track_blocked(&first));
+    assert!(data.is_track_blocked(&second));
+  }
+
+  #[test]
+  fn a_blocked_local_file_is_found_again_by_its_path() {
+    let mut data = data();
+    data.toggle_block_track(&local_file("l1", "C:/m/a/intro.mp3"));
+    assert!(data.is_track_blocked(&local_file("renumbered", "C:/m/a/intro.mp3")));
+  }
+
+  #[test]
+  fn blocking_an_artist_drops_its_liked_tracks_and_stops_following_it() {
+    let mut data = data();
+    data.favorites = vec![
+      track("a", "Muse", "One"),
+      track("b", "Queen", "Two"),
+      track("c", "Muse, Matt", "Three"),
+    ];
+    data.toggle_follow("Muse", None, None);
+    assert!(data.toggle_block_artist("Muse"));
+    let ids: Vec<_> = data
+      .favorites
+      .iter()
+      .map(|t| t.id.clone().unwrap())
+      .collect();
+    assert_eq!(ids, ["b"], "le titre à plusieurs artistes part aussi");
+    assert!(!data.is_followed("Muse"));
+  }
+
+  #[test]
+  fn liking_a_track_or_following_a_blocked_artist_unblocks_it() {
+    let mut data = data();
+    data.toggle_block_artist("Muse");
+    assert!(data.toggle_favorite(&track("a", "Muse", "One"), NOW));
+    assert!(!data.is_artist_blocked("Muse"));
+    data.toggle_block_artist("Queen");
+    assert_eq!(data.add_favorites(&[track("b", "Queen", "Two")], NOW), 1);
+    assert!(!data.is_artist_blocked("Queen"));
+    data.toggle_block_artist("Blur");
+    assert!(data.toggle_follow("Blur", None, None));
+    assert!(!data.is_artist_blocked("Blur"));
+  }
+
+  #[test]
+  fn a_blocked_artist_is_not_listed_among_the_followed_ones() {
+    let mut data = data();
+    data.toggle_follow("Muse", None, None);
+    data.toggle_follow("Queen", None, None);
+    data.blocked_artists.push("Muse".into());
+    let names: Vec<_> = data
+      .followed_artists()
+      .iter()
+      .map(|artist| artist.name.clone())
+      .collect();
+    assert_eq!(names, ["Queen"]);
   }
 
   #[test]

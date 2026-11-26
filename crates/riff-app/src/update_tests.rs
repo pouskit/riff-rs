@@ -282,6 +282,23 @@ fn the_end_of_the_queue_with_autoplay_appends_tracks() {
 }
 
 #[test]
+fn autoplay_proposes_neither_liked_nor_blocked_tracks() {
+  let mut app = app();
+  app.data.autoplay = true;
+  ui(&mut app, UiMessage::RowActivated(ListId::Favorites, 2));
+  loaded(&mut app);
+  audio(&mut app, AudioEvent::Position(Duration::from_secs(199)));
+  audio(&mut app, AudioEvent::Ended);
+  app.data.favorites.push(track("l"));
+  app.data.toggle_block_track(&track("x"));
+  player(
+    &mut app,
+    PlayerMessage::AutoplayReady(tracks(&["l", "x", "new"])),
+  );
+  assert_eq!(current_id(&app), "new");
+}
+
+#[test]
 fn autoplay_without_a_result_loops_like_riff() {
   let mut app = app();
   app.data.autoplay = true;
@@ -527,6 +544,37 @@ fn previous_after_three_seconds_seeks_to_the_start() {
   let effects = player(&mut app, PlayerMessage::Prev);
   assert_eq!(current_id(&app), "a");
   assert!(resolved(&effects).is_some());
+}
+
+#[test]
+fn previous_skips_the_blocked_tracks_of_the_history() {
+  let mut app = app();
+  ui(&mut app, UiMessage::RowActivated(ListId::Favorites, 0));
+  player(&mut app, PlayerMessage::Next);
+  player(&mut app, PlayerMessage::Next);
+  assert_eq!(current_id(&app), "c");
+  app.data.toggle_block_track(&track("b"));
+  player(&mut app, PlayerMessage::Prev);
+  assert_eq!(current_id(&app), "a");
+}
+
+#[test]
+fn previous_skips_the_blocked_tracks_of_the_queue() {
+  let mut app = app();
+  ui(&mut app, UiMessage::RowActivated(ListId::Favorites, 2));
+  app.data.toggle_block_track(&track("b"));
+  player(&mut app, PlayerMessage::Prev);
+  assert_eq!(current_id(&app), "a");
+}
+
+#[test]
+fn previous_does_nothing_when_every_other_track_is_blocked() {
+  let mut app = app();
+  ui(&mut app, UiMessage::RowActivated(ListId::Favorites, 2));
+  app.data.toggle_block_track(&track("a"));
+  app.data.toggle_block_track(&track("b"));
+  assert_eq!(player(&mut app, PlayerMessage::Prev), Vec::new());
+  assert_eq!(current_id(&app), "c");
 }
 
 #[test]
@@ -1182,6 +1230,115 @@ fn recommendations_are_unique_cached_and_exclude_blocked_artists() {
   );
   assert_eq!(app.ui.home.wave.len(), 5);
   assert_eq!(app.data.wave_cache.as_ref().unwrap().tracks.len(), 5);
+}
+
+fn blocked_home() -> App {
+  let mut app = app();
+  app.ui.home.wave = tracks(&["w1", "w2", "w3"]);
+  app.ui.home.trending = tracks(&["t1", "w2"]);
+  app.data.history = tracks(&["w2", "h1"]);
+  app.data.daily_mixes = Some(DailyMixes {
+    day: Some("2026-11-03".into()),
+    mixes: vec![DailyMix {
+      id: Some("daily-mix-1".into()),
+      tracks: tracks(&["m1", "w2", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]),
+      artists: vec!["Artiste w2".into(), "Autre".into()],
+      ..DailyMix::default()
+    }],
+  });
+  app
+}
+
+fn assert_w2_is_gone(app: &App) {
+  assert_eq!(ids(&app.ui.home.wave), ["w1", "w3"]);
+  assert_eq!(ids(&app.ui.home.trending), ["t1"]);
+  let mixes = app.data.daily_mixes.as_ref().unwrap();
+  assert_eq!(
+    ids(&mixes.mixes[0].tracks),
+    ["m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8"]
+  );
+  let recent: Vec<&str> = app
+    .recent_tracks()
+    .iter()
+    .map(|track| track.id.as_deref().unwrap_or(""))
+    .collect();
+  assert_eq!(recent, ["h1"]);
+}
+
+#[test]
+fn blocking_a_track_removes_it_from_every_home_list() {
+  let mut app = blocked_home();
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("w2")), TrackCommand::BlockTrack),
+  );
+  assert_w2_is_gone(&app);
+}
+
+#[test]
+fn blocking_an_artist_from_a_track_removes_its_tracks_from_every_home_list() {
+  let mut app = blocked_home();
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("w2")), TrackCommand::BlockArtist),
+  );
+  assert_w2_is_gone(&app);
+}
+
+#[test]
+fn blocking_an_artist_from_its_page_removes_its_tracks_from_every_home_list() {
+  let mut app = blocked_home();
+  app.ui.artist.name = "Artiste w2".to_string();
+  ui(&mut app, UiMessage::ArtistBlock);
+  assert_w2_is_gone(&app);
+}
+
+#[test]
+fn a_daily_mix_shrunk_below_the_minimum_by_a_block_is_dropped() {
+  let mut app = blocked_home();
+  app.data.daily_mixes.as_mut().unwrap().mixes[0].tracks = tracks(&["m1", "w2", "m2"]);
+  ui(
+    &mut app,
+    UiMessage::Track(Box::new(track("w2")), TrackCommand::BlockTrack),
+  );
+  assert!(app.data.daily_mixes.as_ref().unwrap().mixes.is_empty());
+}
+
+#[test]
+fn a_blocked_artist_leaves_the_subtitle_of_the_daily_mixes() {
+  let mut app = blocked_home();
+  app.ui.artist.name = "Artiste w2".to_string();
+  ui(&mut app, UiMessage::ArtistBlock);
+  let mixes = app.data.daily_mixes.as_ref().unwrap();
+  assert_eq!(mixes.mixes[0].artists, ["Autre"]);
+}
+
+#[test]
+fn the_quick_tiles_never_show_a_blocked_track() {
+  let mut app = blocked_home();
+  app.data.toggle_block_track(&track("w2"));
+  let recent = app.recent_tracks();
+  assert_eq!(recent.len(), 1);
+  assert_eq!(recent[0].id.as_deref(), Some("h1"));
+}
+
+#[test]
+fn the_radio_never_starts_on_a_blocked_card() {
+  let mut app = app();
+  app.ui.home.wave = tracks(&["w1", "w2", "w3"]);
+  app.data.toggle_block_track(&track("w1"));
+  player(&mut app, PlayerMessage::PlayMyWave);
+  assert_eq!(current_id(&app), "w2");
+  assert_eq!(ids(&app.player.queue), ["w2", "w3"]);
+}
+
+#[test]
+fn the_radio_does_not_start_when_every_card_is_blocked() {
+  let mut app = app();
+  app.ui.home.wave = tracks(&["w1"]);
+  app.data.toggle_block_track(&track("w1"));
+  player(&mut app, PlayerMessage::PlayMyWave);
+  assert!(app.player.current.is_none());
 }
 
 #[test]
@@ -2060,6 +2217,18 @@ fn the_radio_is_refilled_and_continues() {
 }
 
 #[test]
+fn the_radio_refill_adds_neither_blocked_nor_liked_tracks() {
+  let mut app = app();
+  app.ui.home.wave = tracks(&["w"]);
+  player(&mut app, PlayerMessage::PlayMyWave);
+  app.data.toggle_block_track(&track("x"));
+  app.data.toggle_block_artist("Artiste y");
+  let reply = json!({ "tracks": tracks(&["a", "x", "y", "new"]) });
+  ui(&mut app, UiMessage::Reply(ReplyTag::RadioRefill, Ok(reply)));
+  assert_eq!(ids(&app.player.queue), ["w", "new"]);
+}
+
+#[test]
 fn skipping_early_in_my_wave_is_remembered() {
   let mut app = app();
   app.ui.home.wave = tracks(&["w", "x"]);
@@ -2093,6 +2262,53 @@ fn mixes_are_kept_for_the_day_only_with_enough_tracks() {
   assert_eq!(app.ui.album.tracks.len(), 8);
   ui(&mut app, UiMessage::RateMix(false));
   assert_eq!(app.data.mix_rating("daily-mix-1"), Some("dislike"));
+}
+
+#[test]
+fn a_daily_mix_drops_the_blocked_tracks_before_it_is_kept() {
+  let mut app = app();
+  app.data.toggle_block_track(&track("b1"));
+  app.data.toggle_block_artist("Artiste b2");
+  let ready = |tracks: Vec<Track>| UiMessage::MixReady {
+    day: "2026-11-03".into(),
+    id: "daily-mix-1".into(),
+    title: "Daily Mix 1".into(),
+    artists: vec!["A".into()],
+    tracks,
+  };
+  ui(
+    &mut app,
+    ready(tracks(&[
+      "1", "2", "3", "4", "5", "6", "7", "8", "b1", "b2",
+    ])),
+  );
+  let mixes = app.data.daily_mixes.as_ref().unwrap();
+  assert_eq!(mixes.mixes[0].tracks.len(), 8);
+  ui(
+    &mut app,
+    ready(tracks(&["1", "2", "3", "4", "5", "6", "7", "b1"])),
+  );
+  assert_eq!(
+    app.data.daily_mixes.as_ref().unwrap().mixes.len(),
+    1,
+    "sept titres sains ne suffisent pas"
+  );
+}
+
+#[test]
+fn opening_a_cached_daily_mix_hides_the_tracks_blocked_since() {
+  let mut app = app();
+  app.data.daily_mixes = Some(DailyMixes {
+    day: Some("2026-11-03".into()),
+    mixes: vec![DailyMix {
+      id: Some("daily-mix-1".into()),
+      tracks: tracks(&["1", "2", "3"]),
+      ..DailyMix::default()
+    }],
+  });
+  app.data.toggle_block_track(&track("2"));
+  ui(&mut app, UiMessage::OpenMix(0));
+  assert_eq!(ids(&app.ui.album.tracks), ["1", "3"]);
 }
 
 #[test]
@@ -2786,6 +3002,50 @@ fn playing_a_playlist_with_shuffle_on_mixes_it_and_leaves_the_global_setting() {
   let mut queue = ids(&app.player.queue);
   queue.sort_unstable();
   assert_eq!(queue, ["x", "y", "z"]);
+}
+
+#[test]
+fn playing_a_shuffled_list_starts_on_an_unblocked_track_after_the_mix() {
+  for _ in 0..20 {
+    let mut app = app();
+    let id = with_playlist(&mut app);
+    ui(&mut app, UiMessage::ListShuffleToggle);
+    assert!(app.data.shuffle_on(&format!("pl:{id}")));
+    app.data.toggle_block_track(&track("x"));
+    app.data.toggle_block_track(&track("y"));
+    ui(&mut app, UiMessage::PlaylistPlay);
+    assert_eq!(current_id(&app), "z");
+    assert_eq!(
+      app.player.queue[app.player.index.unwrap()].id.as_deref(),
+      Some("z")
+    );
+  }
+}
+
+#[test]
+fn playing_a_list_starts_on_its_first_unblocked_track() {
+  let mut app = app();
+  with_playlist(&mut app);
+  app.data.toggle_block_track(&track("x"));
+  ui(&mut app, UiMessage::PlaylistPlay);
+  assert_eq!(current_id(&app), "y");
+  assert_eq!(app.player.index, Some(1));
+}
+
+#[test]
+fn playing_a_fully_blocked_list_tells_it_and_starts_nothing() {
+  let mut app = app();
+  with_playlist(&mut app);
+  for id in ["x", "y", "z"] {
+    app.data.toggle_block_track(&track(id));
+  }
+  let effects = ui(&mut app, UiMessage::PlaylistPlay);
+  assert!(app.player.current.is_none());
+  assert!(app.player.queue.is_empty());
+  assert!(matches!(
+    effects.as_slice(),
+    [Effect::Toast(text, _)] if text == "All these tracks are blocked"
+  ));
 }
 
 #[test]
@@ -4407,6 +4667,51 @@ fn unblocking_the_current_track_does_not_skip() {
     UiMessage::CurrentCommand(TrackCommand::BlockTrack),
   );
   assert!(!app.data.is_track_blocked(&track("a")));
+  assert_eq!(current_id(&app), "a");
+}
+
+#[test]
+fn disliking_a_track_already_covered_by_its_blocked_artist_still_skips() {
+  let mut app = playing_app();
+  app.data.blocked_artists.push("Artiste a".to_string());
+  assert!(!app.data.is_track_blocked(&track("a")));
+  ui(
+    &mut app,
+    UiMessage::CurrentCommand(TrackCommand::BlockTrack),
+  );
+  assert!(app.data.is_track_blocked(&track("a")));
+  assert_eq!(current_id(&app), "b");
+}
+
+#[test]
+fn blocking_the_artist_of_the_current_track_skips_it_and_drops_its_likes() {
+  let mut app = playing_app();
+  app.data.toggle_follow("Artiste a", None, None);
+  let effects = ui(
+    &mut app,
+    UiMessage::CurrentCommand(TrackCommand::BlockArtist),
+  );
+  assert_eq!(current_id(&app), "b");
+  assert!(resolved(&effects).is_some());
+  assert_eq!(ids(&app.data.favorites), ["b", "c"]);
+  assert!(!app.data.is_followed("Artiste a"));
+}
+
+#[test]
+fn blocking_the_artist_from_its_page_skips_the_current_track_too() {
+  let mut app = playing_app();
+  app.ui.artist.name = "Artiste a".to_string();
+  ui(&mut app, UiMessage::ArtistBlock);
+  assert_eq!(current_id(&app), "b");
+}
+
+#[test]
+fn unblocking_an_artist_does_not_skip() {
+  let mut app = playing_app();
+  app.data.toggle_block_artist("Artiste a");
+  app.ui.artist.name = "Artiste a".to_string();
+  ui(&mut app, UiMessage::ArtistBlock);
+  assert!(!app.data.is_artist_blocked("Artiste a"));
   assert_eq!(current_id(&app), "a");
 }
 

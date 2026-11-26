@@ -363,11 +363,19 @@ impl PlayerState {
   }
 
   /// `playPrev`.
-  pub fn prev(&mut self, position: Duration, platform: &str) -> PrevStep {
+  pub fn prev(
+    &mut self,
+    position: Duration,
+    platform: &str,
+    blocked: &dyn Fn(&Track) -> bool,
+  ) -> PrevStep {
     if position > PREVIOUS_RESTART_AFTER {
       return PrevStep::Restart;
     }
-    if let Some(previous) = self.play_history.pop() {
+    while let Some(previous) = self.play_history.pop() {
+      if blocked(&previous) {
+        continue;
+      }
       self.start(previous.clone(), true);
       if let Some(index) = self
         .queue
@@ -381,21 +389,34 @@ impl PlayerState {
     if self.queue.is_empty() {
       return PrevStep::Nothing;
     }
-    if self.queue_history.len() > 1 {
+    while self.queue_history.len() > 1 {
       self.queue_history.pop();
-      if let Some(&index) = self.queue_history.last()
-        && index < self.queue.len()
-      {
-        let track = self.queue[index].clone();
-        self.start(track.clone(), false);
-        self.index = Some(index);
-        return PrevStep::Play(Box::new(track));
+      let Some(&index) = self.queue_history.last() else {
+        break;
+      };
+      if index >= self.queue.len() {
+        break;
       }
+      if blocked(&self.queue[index]) {
+        continue;
+      }
+      let track = self.queue[index].clone();
+      self.start(track.clone(), false);
+      self.index = Some(index);
+      return PrevStep::Play(Box::new(track));
     }
-    let previous = self
+    let len = self.queue.len();
+    let first = self
       .index
       .filter(|&index| index > 0)
-      .map_or(self.queue.len() - 1, |index| index - 1);
+      .map_or(len - 1, |index| index - 1);
+    // Retour en arrière cyclique, sans les titres bloqués ni, hors file d'un seul titre, le titre en cours.
+    let Some(previous) = (0..len)
+      .map(|step| (first + len - step) % len)
+      .find(|&at| !blocked(&self.queue[at]) && (len == 1 || self.index != Some(at)))
+    else {
+      return PrevStep::Nothing;
+    };
     let track = self.queue[previous].clone();
     self.start(track.clone(), false);
     self.index = Some(previous);
@@ -723,7 +744,7 @@ mod tests {
   fn previous_after_three_seconds_restarts_the_track() {
     let mut player = playing(&["a", "b"], 1);
     assert_eq!(
-      player.prev(Duration::from_millis(3001), P),
+      player.prev(Duration::from_millis(3001), P, &none),
       PrevStep::Restart
     );
     assert_eq!(player.index, Some(1));
@@ -733,7 +754,7 @@ mod tests {
   fn previous_at_three_seconds_exactly_goes_back() {
     let mut player = playing(&["a", "b"], 0);
     player.next(&none, false);
-    let PrevStep::Play(track) = player.prev(PREVIOUS_RESTART_AFTER, P) else {
+    let PrevStep::Play(track) = player.prev(PREVIOUS_RESTART_AFTER, P, &none) else {
       panic!()
     };
     assert_eq!(track.id.as_deref(), Some("a"));
@@ -746,7 +767,7 @@ mod tests {
     player.next(&none, false);
     player.next(&none, false);
     let back = |player: &mut PlayerState| {
-      let PrevStep::Play(track) = player.prev(Duration::ZERO, P) else {
+      let PrevStep::Play(track) = player.prev(Duration::ZERO, P, &none) else {
         panic!()
       };
       track.id.unwrap()
@@ -756,17 +777,33 @@ mod tests {
   }
 
   #[test]
+  fn previous_skips_the_blocked_tracks_of_the_queue_history() {
+    let mut player = playing(&["a", "b", "c"], 0);
+    player.next(&none, false);
+    player.next(&none, false);
+    player.play_history.clear();
+    assert_eq!(player.queue_history, [0, 1, 2]);
+    let blocked = |t: &Track| t.id.as_deref() == Some("b");
+    let PrevStep::Play(track) = player.prev(Duration::ZERO, P, &blocked) else {
+      panic!()
+    };
+    assert_eq!(track.id.as_deref(), Some("a"));
+    assert_eq!(player.index, Some(0));
+    assert_eq!(player.queue_history, [0]);
+  }
+
+  #[test]
   fn previous_does_not_add_to_the_play_history() {
     let mut player = playing(&["a", "b"], 0);
     player.next(&none, false);
-    player.prev(Duration::ZERO, P);
+    player.prev(Duration::ZERO, P, &none);
     assert!(player.play_history.is_empty());
   }
 
   #[test]
   fn previous_at_the_start_wraps_to_the_last_track() {
     let mut player = playing(&["a", "b", "c"], 0);
-    let PrevStep::Play(track) = player.prev(Duration::ZERO, P) else {
+    let PrevStep::Play(track) = player.prev(Duration::ZERO, P, &none) else {
       panic!()
     };
     assert_eq!(track.id.as_deref(), Some("c"));
@@ -776,7 +813,7 @@ mod tests {
   #[test]
   fn previous_without_a_queue_does_nothing() {
     assert_eq!(
-      PlayerState::new(1).prev(Duration::ZERO, P),
+      PlayerState::new(1).prev(Duration::ZERO, P, &none),
       PrevStep::Nothing
     );
   }

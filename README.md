@@ -1,41 +1,60 @@
-# riff-rs
+# Riff
 
-Riff (natif) est un lecteur de musique de bureau écrit en Rust, avec une interface native [iced](https://github.com/iced-rs/iced) et un moteur audio en Rust. C'est un portage de [Riff](https://github.com/rootscripts/riff) 44.1.1 (Electron), qui garde ses fonctions et son apparence sans Electron, sans navigateur embarqué ni JavaScript.
+[![CI](https://github.com/pouskit/riff-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/pouskit/riff-rs/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/pouskit/riff-rs)](https://github.com/pouskit/riff-rs/releases/latest)
+[![Licence MIT](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
 
-## État : préversion
-Le projet prépare une version `1.0.0-rc.1`. Aucune release n'est publiée à ce jour. Tableau final mesuré le 2026-11-23 sur le paquet installé (commit `40ed624`, Ryzen 9 5900X, RX 7800 XT, Windows 11) : RAM au repos 110,4 Mo, RAM en lecture 101,8 Mo, démarrage jusqu'à la deuxième image 347 ms, CPU en lecture de 8,25 % (rien d'affiché) à 12,15 % (scène c), défilement de 5 000 pistes p95 9,35 ms, début de lecture d'un fichier local 70 ms, exécutable 47,93 Mo, dossier d'installation 48,62 Mo, installeur 13,50 Mo. La recherche n'est pas mesurée. Méthode, valeurs brutes, comparaison avec Riff 44.1.1 et limites : [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
+**Lecteur de musique de bureau, 100 % Rust, léger, rapide et sans télémétrie.**
 
-| Système | Ce qui a été fait |
-|---|---|
-| Windows | Développé et essayé à l'écran. |
-| Linux, macOS | Compilés, vérifiés par Clippy et testés par la CI (Ubuntu, macOS), jamais lancés à l'écran. Tout ce qui touche à l'affichage, au son, à la zone de notification, aux raccourcis globaux, au coffre des secrets et à la session média y est non vérifié. |
+Riff réunit YouTube, YouTube Music, SoundCloud et tes fichiers locaux dans une seule application native : interface [iced](https://github.com/iced-rs/iced), moteur audio en Rust, aucun navigateur embarqué, aucun JavaScript.
+
+## Points forts
+- **Léger.** Environ 110 Mo de RAM au repos, démarrage en 350 ms, installeur de 13,5 Mo ([mesures](docs/BENCHMARKS.md)).
+- **Un seul lecteur pour tout.** Recherche et lecture YouTube, YouTube Music, SoundCloud et fichiers locaux, mélangés librement dans une même playlist.
+- **Jam.** Écoute partagée par Internet avec jusqu'à 7 amis : file commune, lecture, pause et déplacement synchronisés, connexion directe chiffrée de bout en bout (`iroh`), code d'invitation à copier.
+- **Son.** Égaliseur 10 bandes, réverbération, distorsion, compresseur, normalisation, fondu enchaîné.
+- **Paroles.** Synchronisées (lrclib, Genius, Kugou, NetEase, Musixmatch), mode karaoké, textes de droite à gauche, traduction optionnelle.
+- **Respect de la vie privée.** Zéro télémétrie, paramètres de suivi retirés des adresses, secrets dans le coffre du système ([détails](docs/PRIVACY.md)).
+
+## Fonctions
+- Bibliothèque, favoris, titres bloqués, historique, file de lecture, téléchargements hors ligne, minuterie de veille.
+- Reprise au lancement : file, titre et position retrouvés.
+- Import de playlists Spotify, Apple Music, Yandex Music, Deezer, SoundCloud, YouTube et de fichiers d'export.
+- Visuels, fond de pochette flou, bannières et pochettes par titre, thèmes et éditeur de thème, fenêtre compacte.
+- Discord Rich Presence personnalisable, scrobbling Last.fm, contrôles multimédias du système, zone de notification, raccourcis globaux, lancement avec Windows.
+- Plugins en [Rhai](https://rhai.rs), dans un bac à sable sans accès aux fichiers ni au réseau ([API](docs/plugins/README.md)).
+- Interface en anglais, français, russe et ukrainien.
+- Commande `riff-app lyrics` : la ligne de paroles courante dans un terminal.
 
 ## Installation
-Il n'existe pas encore de paquet. Quand les releases seront publiées, elles viendront de la page « Releases » du dépôt : installeur Windows, AppImage Linux, dmg et zip macOS, avec une empreinte SHA-256 par fichier.
+Télécharge l'installeur depuis la page [Releases](https://github.com/pouskit/riff-rs/releases/latest).
 
-**Les paquets ne seront pas signés** (aucun certificat de signature de code Windows ni compte développeur Apple). Vérifie l'empreinte avant de lancer un fichier téléchargé :
+| Système | Paquet | État |
+|---|---|---|
+| Windows 10/11 x64 | `riff-app_<version>_x64-setup.exe` | Pris en charge |
+| Linux x64 | AppImage | Expérimental (jamais testé à l'écran) |
+| macOS | dmg | Expérimental (jamais testé à l'écran) |
+
+Les paquets ne sont pas signés par un certificat de code. Vérifie l'empreinte SHA-256 avant de les lancer et compare-la au fichier `SHA256SUMS` de la release :
 
 - Windows (PowerShell) : `Get-FileHash .\<fichier> -Algorithm SHA256`
 - macOS : `shasum -a 256 <fichier>`
 - Linux : `sha256sum <fichier>`
 
-Compare le résultat à l'empreinte publiée avec la release.
+Windows affiche alors « Windows a protégé votre ordinateur » : clique sur « Informations complémentaires », puis « Exécuter quand même ». Sous macOS, autorise l'ouverture dans Réglages Système, Confidentialité et sécurité.
 
-- **Windows, SmartScreen.** Un exécutable non signé déclenche « Windows a protégé votre ordinateur ». Après avoir vérifié l'empreinte, clique sur « Informations complémentaires », puis « Exécuter quand même ».
-- **macOS, Gatekeeper.** Les applications sont signées « ad hoc » (sans identité de développeur) et non notarisées : macOS refuse de les ouvrir au premier lancement. Après avoir vérifié l'empreinte, autorise l'ouverture dans Réglages Système, Confidentialité et sécurité (bouton « Ouvrir quand même »). Le libellé et le chemin exacts dépendent de la version de macOS : non vérifié.
-
-Riff ne se met pas à jour tout seul. Le bouton de vérification de « À propos » interroge l'API des releases du dépôt, sur ton clic seulement, et n'installe rien. Tant que le dépôt n'a pas de release publique, il répond « aucune release publique ».
+**Mises à jour.** Riff ne contacte GitHub que sur ton clic (« À propos », désactivable). Sous Windows, l'installation d'une mise à jour vérifie sa signature minisign et son SHA-256 avant de la lancer ; un fichier non signé est refusé.
 
 ## Compiler depuis les sources
-Prérequis : Rust 1.97 ou plus récent (`rust-version` du workspace, édition 2024).
+Prérequis : Rust 1.97 ou plus récent.
 
 ```
 cargo build --release -p riff-app
 ```
 
-Le binaire est `target/release/riff-app` (`riff-app.exe` sous Windows). Sous Linux, installe d'abord les bibliothèques de développement utilisées par la CI : `pkg-config libasound2-dev libdbus-1-dev libwayland-dev libxkbcommon-dev` (paquets Debian et Ubuntu).
+Le binaire est `target/release/riff-app` (`riff-app.exe` sous Windows). Sous Linux (Debian, Ubuntu) : `pkg-config libasound2-dev libdbus-1-dev libwayland-dev libxkbcommon-dev`.
 
-Vérifications du dépôt :
+Vérifications :
 
 ```
 cargo fmt --all --check
@@ -44,38 +63,27 @@ cargo test --workspace --locked --no-fail-fast
 cargo deny --workspace --locked check
 ```
 
-La CI installe `ffmpeg` et `ffprobe` avant de lancer les tests.
+Architecture : `riff-app` (interface iced), `riff-audio` (décodage `symphonia`, sortie `cpal`, effets), `riff-core` (services, bibliothèque, réseau), `riff-plugins` (moteur Rhai).
 
-## Fonctions
-- Recherche et lecture depuis YouTube, YouTube Music et SoundCloud, avec Deezer, iTunes, Last.fm et Wikipédia pour les pochettes, artistes et albums. Les flux passent par `yt-dlp` et ffmpeg, téléchargés sur ton clic (voir [docs/SERVICES.md](docs/SERVICES.md)).
-- Moteur audio en Rust : décodage, égaliseur 10 bandes, réverbération, distorsion, compresseur, normalisation.
-- Paroles synchronisées (lrclib, Genius, Kugou, NetEase, Musixmatch), mode karaoké, textes de droite à gauche, traduction optionnelle.
-- Visuels : barres, forme, fond de pochette flou, bannières par titre.
-- Import de playlists Spotify, Apple Music, Yandex Music, Deezer, SoundCloud et YouTube, et de fichiers d'export.
-- Bibliothèque, favoris, historique, file de lecture, titres téléchargés, minuterie de veille.
-- Reprise au lancement : la file (ordre, aléatoire, liste d'origine), le titre en cours et sa position sont gardés dans `playback-state.json` et `playback-position.json` (dossier de données), puis relus à chaque lancement, en lecture. La position s'écrit au plus toutes les 10 s pendant la lecture, à la pause, au déplacement, à la fermeture et à l'arrêt de Windows ; jamais la file d'un jam.
-- Discord Rich Presence, scrobbling Last.fm, contrôles du système (session média), zone de notification, raccourcis globaux, fenêtre compacte.
-- Thèmes et éditeur de thème, plugins Rhai, commande `riff-app lyrics` qui affiche la ligne de paroles courante dans un terminal.
-- Interface en anglais, avec les dictionnaires russe et ukrainien de Riff.
-- Import, au premier lancement, des données d'un Riff d'origine ou de Riff Tauri (lecture seule de leur `storage.json`, là où il est : jamais copié, jamais écrit).
-- L'écran d'import n'apparaît qu'au premier lancement : tant que `native-settings.json` ou `user-data.json` existe dans le dossier de données, il n'est plus proposé, même après « Start fresh ». Pour le relancer, ferme l'application, déplace ces deux fichiers hors du dossier de données (par exemple `%LOCALAPPDATA%\Riff (natif)` sous Windows ; le dossier réel suit `RIFF_DATA_DIR` et le réglage `dataDir`), puis relance : le `storage.json` de Riff doit toujours exister et contenir des clés. Les nouveaux réglages et données sont perdus si tu ne les gardes pas ailleurs.
-- Dossier propre, distinct de Riff : `%LOCALAPPDATA%\Riff (natif)` (Windows), `~/Library/Application Support/Riff (natif)` (macOS), `$XDG_DATA_HOME/riff-native` et `$XDG_CONFIG_HOME/riff-native` (Linux, défauts `~/.local/share` et `~/.config`). Les deux applications peuvent coexister. `RIFF_DATA_DIR` et le réglage `dataDir` gardent la priorité.
-- Au premier lancement, si l'ancien dossier par défaut de Riff (natif) (`%LOCALAPPDATA%\Riff`, `~/Library/Application Support/Riff`, `~/.cache/devsize` et `~/.config/devsize`) contient `native-settings.json` ou `user-data.json`, ses données sont copiées dans le nouveau dossier (réglages, données, bibliothèque, paroles, thèmes, plugins, `bin`). L'ancien dossier n'est jamais modifié. Le cache audio (`tracks`), les miniatures et les journaux ne sont pas repris.
-- Aucune télémétrie. Voir [docs/PRIVACY.md](docs/PRIVACY.md).
+## Données
+Dossier de données : `%LOCALAPPDATA%\Riff (natif)` (Windows), `~/Library/Application Support/Riff (natif)` (macOS), `~/.local/share/riff-native` et `~/.config/riff-native` (Linux). La variable `RIFF_DATA_DIR` le remplace. Au premier lancement, Riff propose d'importer les données d'une installation de Riff (Electron) existante, en lecture seule.
 
-## Plugins
-**Les plugins JavaScript de Riff ne sont pas compatibles.** Cette version n'embarque ni moteur JavaScript ni page web : un plugin `.js` est listé « incompatible » et n'est jamais exécuté. Les plugins s'écrivent en [Rhai](https://rhai.rs), dans un bac à sable sans accès aux fichiers ni au réseau, avec des permissions déclarées et affichées avant l'activation. Voir [docs/plugins/README.md](docs/plugins/README.md) pour l'API et [docs/plugins/PORTAGE.md](docs/plugins/PORTAGE.md) pour réécrire un plugin JavaScript.
+## Prochaines étapes
+- Corriger la navigation dans les réglages et ajouter la lecture directe depuis les cartes de l'accueil.
+- Améliorer la file automatique : moins de répétition de l'album ou des favoris, mode découverte de titres similaires hors favoris.
+- Notifications de sortie pour les artistes suivis.
+- Connexion à un compte YouTube Music : favoris synchronisés et suggestions sur l'accueil (selon les API disponibles).
+- Audits complets de sécurité et de performance.
+- Validation à l'écran sous Linux et macOS.
+
+Suivi détaillé : [CHANGELOG](CHANGELOG.md).
 
 ## Limites connues
-- **Accessibilité.** L'application n'expose pas d'arbre d'accessibilité (limite d'iced 0.14.0) : un lecteur d'écran ne peut pas l'utiliser.
-- **SoundCloud.** Les flux chiffrés (FairPlay) ne sont pas lisibles : un titre qui n'a que ce flux affiche une erreur.
-- **Linux et macOS.** Jamais lancés à l'écran (voir « État »). Sous Linux, l'icône de la zone de notification, les raccourcis globaux sous Wayland, la police de l'interface et le coffre des secrets (Secret Service requis) sont des points de risque non vérifiés.
-- **`riff-app lyrics`** affiche la ligne de paroles entière, pas mot à mot comme `riff lyrics` de Riff.
-- **Traduction.** Une fois activée, les paroles et les textes de l'interface sont envoyés à Google, ou à DeepL si tu renseignes une clé. Elle est coupée par défaut.
-- **Pilote graphique AMD.** Sur la machine de développement (Radeon RX 7800 XT, DX12), sans le contournement `DRIVER_WARMUP_FRAMES` (240 images invisibles au démarrage), un cœur de processeur reste occupé au repos. Le contournement reste en place ; il n'a été essayé sur aucun autre GPU.
-- **Traductions `ru` et `uk`.** Elles n'ont pas été relues par un locuteur, y compris les textes ajoutés par riff-rs (écran d'import, rapport, deux messages d'erreur) ; les clés absentes retombent sur l'anglais.
-- **Plugins.** Voir [le CHANGELOG](CHANGELOG.md) pour les limites de l'éditeur et des exemples.
-- **Kugou et NetEase** sont interrogés en `http://` clair, comme dans Riff d'origine.
+- Pas d'arbre d'accessibilité (limite d'iced 0.14.0) : un lecteur d'écran ne peut pas utiliser l'application.
+- Flux SoundCloud chiffrés (FairPlay) non lisibles.
+- Plugins JavaScript de Riff (Electron) non compatibles : ils se réécrivent en Rhai ([guide](docs/plugins/PORTAGE.md)).
+- Traductions russe et ukrainienne non relues par un locuteur.
+- Kugou et NetEase sont interrogés en `http://` clair.
 
 ## Licence
-MIT, Copyright (c) 2026 rootscripts et Copyright (c) 2026 Pouskit. Voir [LICENSE](LICENSE) et [NOTICE.md](NOTICE.md) (dépendance à Riff, polices, icônes, licences des bibliothèques). La licence MIT couvre le code de ce dépôt, pas les conditions d'utilisation des services tiers : voir [docs/SERVICES.md](docs/SERVICES.md).
+MIT. Riff est dérivé de [Riff](https://github.com/rootscripts/riff) (Electron, MIT) : Copyright (c) 2026 rootscripts et Copyright (c) 2026 Pouskit. Voir [LICENSE](LICENSE) et [NOTICE.md](NOTICE.md). La licence couvre ce code, pas les conditions d'utilisation des services tiers ([docs/SERVICES.md](docs/SERVICES.md)).

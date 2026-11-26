@@ -33,11 +33,32 @@ type Conn = tokio::net::windows::named_pipe::NamedPipeClient;
 #[cfg(not(windows))]
 type Conn = tokio::net::UnixStream;
 
+#[derive(Debug, PartialEq)]
 enum Msg {
   Update(Value),
   Clear,
   SetEnabled(bool),
   Reconnect,
+}
+
+impl Msg {
+  /// `Update` ou `Clear` : seul le dernier d'une suite compte.
+  fn is_activity(&self) -> bool {
+    matches!(self, Self::Update(_) | Self::Clear)
+  }
+}
+
+/// `first` puis les messages déjà en file, dans l'ordre. Une suite d'`Update`/`Clear` se réduit au dernier :
+/// Discord limite le débit de `SET_ACTIVITY` et seul l'état final compte. `SetEnabled` et `Reconnect` restent à leur place.
+fn coalesce(first: Msg, rx: &mut mpsc::UnboundedReceiver<Msg>) -> Vec<Msg> {
+  let mut batch = vec![first];
+  while let Ok(next) = rx.try_recv() {
+    match batch.last_mut() {
+      Some(last) if last.is_activity() && next.is_activity() => *last = next,
+      _ => batch.push(next),
+    }
+  }
+  batch
 }
 
 struct Handle {
@@ -265,6 +286,10 @@ async fn push_track(c: &mut Conn, info: &Value) -> bool {
   match set_activity(c, p.activity(true)).await {
     None => false,
     Some(true) => true,
+    Some(false) if p.display_type.is_none() => {
+      tracing::warn!("[Discord RPC] SET_ACTIVITY refusé par Discord");
+      true
+    }
     Some(false) => match set_activity(c, p.activity(false)).await {
       None => false,
       Some(true) => true,
@@ -292,7 +317,11 @@ impl Worker {
       let retry = self.retry_at;
       tokio::select! {
         msg = rx.recv() => match msg {
-          Some(m) => self.handle(m).await,
+          Some(m) => {
+            for m in coalesce(m, &mut rx) {
+              self.handle(m).await;
+            }
+          }
           None => break,
         },
         _ = sleep_until(retry.unwrap_or_else(Instant::now)), if retry.is_some() => {
@@ -429,14 +458,42 @@ impl Worker {
   }
 }
 
+/// Ligne de statut du profil compact (`statusDisplay`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Status {
+  /// « Listening to Riff », `state` = `by <artiste>`.
+  Riff,
+  Artist,
+  Track,
+  /// `details` = `<titre> - <artiste>`.
+  TrackArtist,
+}
+
+/// Minutage affiché (`timeDisplay`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Time {
+  /// Début et fin : barre de progression.
+  Progress,
+  /// Début seul : temps écoulé.
+  Elapsed,
+  Hidden,
+}
+
 struct Params {
   details: String,
   state: String,
   thumbnail: String,
+  /// Texte au survol de la pochette : l'album.
+  large_text: Option<String>,
   url: Option<String>,
+  /// Dépôt de Riff : second bouton, `https` seulement.
+  repo_url: Option<String>,
   start: i64,
   duration: i64,
-  artist_in_status: bool,
+  /// `status_display_type` : 1 = `state`, 2 = `details` ; `None` = nom de l'application.
+  display_type: Option<u8>,
+  time: Time,
+  paused: bool,
 }
 
 impl Params {
@@ -449,12 +506,35 @@ impl Params {
         .unwrap_or(default)
         .to_string()
     };
-    let artist_in_status = info.get("artistInStatus").and_then(Value::as_bool) != Some(false);
+    let status = match info.get("statusDisplay").and_then(Value::as_str) {
+      Some("riff") => Status::Riff,
+      Some("track") => Status::Track,
+      Some("track-artist") => Status::TrackArtist,
+      _ => Status::Artist,
+    };
+    let time = match info.get("timeDisplay").and_then(Value::as_str) {
+      Some("elapsed") => Time::Elapsed,
+      Some("hidden") => Time::Hidden,
+      _ => Time::Progress,
+    };
+    let paused = info.get("paused").and_then(Value::as_bool) == Some(true);
+    let title = text("title", "Unknown Track");
     let artist = text("artist", "Unknown Artist");
-    let state = if artist_in_status {
-      clean(&artist)
-    } else {
-      clean(&format!("by {artist}"))
+    let details = match status {
+      Status::TrackArtist => format!("{title} - {artist}"),
+      _ => title,
+    };
+    let mut state = match status {
+      Status::Riff => format!("by {artist}"),
+      _ => artist,
+    };
+    if paused {
+      state = format!("{state} · {}", text("pausedLabel", "Paused"));
+    }
+    let display_type = match status {
+      Status::Riff => None,
+      Status::Artist => Some(1),
+      Status::Track | Status::TrackArtist => Some(2),
     };
     let now = SystemTime::now()
       .duration_since(UNIX_EPOCH)
@@ -472,43 +552,73 @@ impl Params {
       .filter(|v| *v > 0.0)
       .map(|v| v.floor() as i64)
       .unwrap_or(0);
-    let url = info
-      .get("url")
+    let https_url = |key: &str| {
+      info
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|u| u.starts_with("https://") && u.len() <= 512)
+        .map(str::to_string)
+    };
+    let url = https_url("url");
+    let repo_url = https_url("repoUrl");
+    let large_text = info
+      .get("album")
       .and_then(Value::as_str)
-      .filter(|u| u.starts_with("https://") && u.len() <= 512)
-      .map(str::to_string);
+      .filter(|album| !album.trim().is_empty())
+      .map(clean);
     Params {
-      details: clean(&text("title", "Unknown Track")),
-      state,
+      details: clean(&details),
+      state: clean(&state),
       thumbnail: text("thumbnail", ""),
+      large_text,
       url,
+      repo_url,
       start,
       duration,
-      artist_in_status,
+      display_type,
+      time,
+      paused,
     }
   }
 
-  /// Objet `activity` du protocole (type 2 = « Listening »). `status_display_type: 1` = afficher l'artiste.
+  /// Objet `activity` du protocole (type 2 = « Listening »). En pause, aucun minutage.
   fn activity(&self, with_display: bool) -> Value {
-    let mut timestamps = json!({ "start": self.start });
-    if self.duration > 0 {
-      timestamps["end"] = json!(self.start + self.duration);
-    }
     let mut a = json!({
       "type": 2,
       "details": self.details,
       "state": self.state,
-      "timestamps": timestamps,
       "instance": false,
     });
+    let timestamps = match self.time {
+      _ if self.paused => None,
+      Time::Progress if self.duration > 0 => {
+        Some(json!({ "start": self.start, "end": self.start + self.duration }))
+      }
+      Time::Progress | Time::Elapsed => Some(json!({ "start": self.start })),
+      Time::Hidden => None,
+    };
+    if let Some(timestamps) = timestamps {
+      a["timestamps"] = timestamps;
+    }
     if !self.thumbnail.is_empty() {
       a["assets"] = json!({ "large_image": self.thumbnail });
+      if let Some(album) = &self.large_text {
+        a["assets"]["large_text"] = json!(album);
+      }
     }
-    if let Some(url) = &self.url {
-      a["buttons"] = json!([{ "label": "Listen", "url": url }]);
+    let buttons: Vec<Value> = [("Listen", &self.url), ("Riff", &self.repo_url)]
+      .into_iter()
+      .filter_map(|(label, url)| {
+        url
+          .as_ref()
+          .map(|url| json!({ "label": label, "url": url }))
+      })
+      .collect();
+    if !buttons.is_empty() {
+      a["buttons"] = Value::Array(buttons);
     }
-    if with_display && self.artist_in_status {
-      a["status_display_type"] = json!(1);
+    if with_display && let Some(kind) = self.display_type {
+      a["status_display_type"] = json!(kind);
     }
     a
   }
@@ -536,7 +646,7 @@ mod tests {
 
   #[test]
   fn params_defaults_and_url_rules() {
-    let p = Params::from(&json!({ "url": "http://x", "artistInStatus": false, "artist": "A" }));
+    let p = Params::from(&json!({ "url": "http://x", "statusDisplay": "riff", "artist": "A" }));
     assert_eq!(p.details, "Unknown Track");
     assert_eq!(p.state, "by A");
     assert!(p.url.is_none());
@@ -544,6 +654,7 @@ mod tests {
     assert_eq!(p.url.as_deref(), Some("https://x"));
     assert_eq!((p.start, p.duration), (1000, 215));
     assert_eq!(p.state, "Unknown Artist");
+    assert_eq!(p.display_type, Some(1), "sans mode : l'artiste");
   }
 
   #[test]
@@ -561,6 +672,173 @@ mod tests {
     assert!(p.activity(false).get("status_display_type").is_none());
   }
 
+  #[test]
+  fn the_repository_button_follows_the_listen_button() {
+    let both = activity_of(json!({ "url": "https://u", "repoUrl": "https://github.com/o/r" }));
+    assert_eq!(
+      both["buttons"],
+      json!([
+        { "label": "Listen", "url": "https://u" },
+        { "label": "Riff", "url": "https://github.com/o/r" },
+      ])
+    );
+    let local = activity_of(json!({ "repoUrl": "https://github.com/o/r" }));
+    assert_eq!(
+      local["buttons"],
+      json!([{ "label": "Riff", "url": "https://github.com/o/r" }]),
+      "sans adresse : Riff seul"
+    );
+    assert!(activity_of(json!({})).get("buttons").is_none());
+  }
+
+  #[test]
+  fn the_repository_button_needs_https_and_a_short_url() {
+    for url in [
+      json!("http://github.com/o/r"),
+      json!(""),
+      json!(42),
+      json!(format!("https://github.com/{}", "x".repeat(512))),
+    ] {
+      let a = activity_of(json!({ "repoUrl": url }));
+      assert!(a.get("buttons").is_none(), "{url}");
+    }
+    let a = activity_of(json!({ "url": "https://u", "repoUrl": "http://x" }));
+    assert_eq!(a["buttons"].as_array().map(Vec::len), Some(1));
+  }
+
+  fn activity_of(info: Value) -> Value {
+    let mut info = info;
+    for (key, value) in [("title", "Song"), ("artist", "Art")] {
+      if info.get(key).is_none() {
+        info[key] = json!(value);
+      }
+    }
+    Params::from(&info).activity(true)
+  }
+
+  #[test]
+  fn the_riff_status_keeps_the_app_name() {
+    let a = activity_of(json!({ "statusDisplay": "riff" }));
+    assert_eq!(
+      (&a["details"], &a["state"]),
+      (&json!("Song"), &json!("by Art"))
+    );
+    assert!(a.get("status_display_type").is_none());
+  }
+
+  #[test]
+  fn the_artist_status_shows_the_state() {
+    let a = activity_of(json!({ "statusDisplay": "artist" }));
+    assert_eq!(
+      (&a["details"], &a["state"]),
+      (&json!("Song"), &json!("Art"))
+    );
+    assert_eq!(a["status_display_type"], 1);
+  }
+
+  #[test]
+  fn the_track_status_shows_the_details() {
+    let a = activity_of(json!({ "statusDisplay": "track" }));
+    assert_eq!(
+      (&a["details"], &a["state"]),
+      (&json!("Song"), &json!("Art"))
+    );
+    assert_eq!(a["status_display_type"], 2);
+  }
+
+  #[test]
+  fn the_track_artist_status_joins_title_and_artist_in_the_details() {
+    let a = activity_of(json!({ "statusDisplay": "track-artist" }));
+    assert_eq!(
+      (&a["details"], &a["state"]),
+      (&json!("Song - Art"), &json!("Art"))
+    );
+    assert_eq!(a["status_display_type"], 2);
+    let long = activity_of(json!({ "statusDisplay": "track-artist", "title": "x".repeat(200) }));
+    assert_eq!(long["details"].as_str().unwrap().chars().count(), 128);
+  }
+
+  #[test]
+  fn the_progress_time_sends_start_and_end() {
+    let a =
+      activity_of(json!({ "timeDisplay": "progress", "startTimestamp": 50, "duration": 100 }));
+    assert_eq!(a["timestamps"], json!({ "start": 50, "end": 150 }));
+    let live = activity_of(json!({ "timeDisplay": "progress", "startTimestamp": 50 }));
+    assert_eq!(live["timestamps"], json!({ "start": 50 }), "sans durée");
+  }
+
+  #[test]
+  fn the_elapsed_time_sends_the_start_only() {
+    let a = activity_of(json!({ "timeDisplay": "elapsed", "startTimestamp": 50, "duration": 100 }));
+    assert_eq!(a["timestamps"], json!({ "start": 50 }));
+  }
+
+  #[test]
+  fn the_hidden_time_sends_no_timestamps() {
+    let a = activity_of(json!({ "timeDisplay": "hidden", "startTimestamp": 50, "duration": 100 }));
+    assert!(a.get("timestamps").is_none());
+  }
+
+  #[test]
+  fn a_paused_track_has_no_timestamps_and_a_suffixed_state() {
+    let a = activity_of(json!({
+      "statusDisplay": "riff", "paused": true, "pausedLabel": "En pause",
+      "startTimestamp": 50, "duration": 100
+    }));
+    assert!(a.get("timestamps").is_none());
+    assert_eq!(a["state"], "by Art · En pause");
+    let a = activity_of(json!({ "paused": true }));
+    assert_eq!(a["state"], "Art · Paused", "libellé de repli");
+  }
+
+  #[test]
+  fn the_album_goes_on_the_cover_hover_only_with_a_cover() {
+    let a = activity_of(json!({ "thumbnail": "https://i/x.jpg", "album": "Alb" }));
+    assert_eq!(
+      a["assets"],
+      json!({ "large_image": "https://i/x.jpg", "large_text": "Alb" })
+    );
+    let a = activity_of(json!({ "thumbnail": "https://i/x.jpg", "album": " " }));
+    assert_eq!(a["assets"], json!({ "large_image": "https://i/x.jpg" }));
+    let a = activity_of(json!({ "thumbnail": "", "album": "Alb" }));
+    assert!(a.get("assets").is_none(), "pochette coupée : aucun asset");
+  }
+
+  fn queue(messages: Vec<Msg>) -> mpsc::UnboundedReceiver<Msg> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    for message in messages {
+      tx.send(message).unwrap();
+    }
+    rx
+  }
+
+  #[test]
+  fn queued_updates_and_clears_collapse_to_the_last_one_in_order() {
+    let mut rx = queue(vec![
+      Msg::Update(json!(2)),
+      Msg::Clear,
+      Msg::Update(json!(3)),
+      Msg::SetEnabled(false),
+      Msg::Clear,
+      Msg::Update(json!(4)),
+      Msg::Reconnect,
+      Msg::Reconnect,
+    ]);
+    assert_eq!(
+      coalesce(Msg::Update(json!(1)), &mut rx),
+      [
+        Msg::Update(json!(3)),
+        Msg::SetEnabled(false),
+        Msg::Update(json!(4)),
+        Msg::Reconnect,
+        Msg::Reconnect,
+      ]
+    );
+    assert!(rx.try_recv().is_err());
+    let mut empty = queue(Vec::new());
+    assert_eq!(coalesce(Msg::Clear, &mut empty), [Msg::Clear]);
+  }
+
   /// Nécessite un Discord ouvert ; modifie brièvement la présence de l'utilisateur.
   #[tokio::test]
   #[ignore]
@@ -568,7 +846,7 @@ mod tests {
     let (mut c, user) = handshake(CLIENT_ID).await.expect("handshake");
     println!("READY user={user}");
     let info = json!({
-      "title": "riff-rs test", "artist": "test", "artistInStatus": true, "duration": 200,
+      "title": "riff-rs test", "artist": "test", "statusDisplay": "artist", "duration": 200,
       "startTimestamp": SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() - 30,
       "url": "https://example.com/x", "thumbnail": ""
     });

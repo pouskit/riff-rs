@@ -5,11 +5,13 @@ pub mod app;
 #[cfg(test)]
 mod app_tests;
 pub mod client;
+pub mod code;
 pub mod host;
 pub mod iroh;
 #[cfg(test)]
 pub mod memory;
 pub mod protocol;
+pub mod rendezvous;
 pub mod state;
 pub mod sync;
 #[cfg(test)]
@@ -52,13 +54,32 @@ pub enum JamMessage {
   End,
 }
 
-/// Transport réel. Un relais invalide donne les relais par défaut ; le booléen le signale.
+/// Réglages d'URL qui ne s'analysent pas.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InvalidUrls {
+  pub relay: bool,
+  pub rendezvous: bool,
+}
+
+/// Transport réel. Un relais invalide donne ceux par défaut. Une URL de rendez-vous invalide coupe le rendez-vous
+/// (l'hôte garde le code long, l'invité n'a pas de code court) : elle ne retombe jamais sur le serveur de n0, qui
+/// verrait l'IP et les heures de quelqu'un qui en a choisi un autre. `InvalidUrls` le signale.
 #[must_use]
-pub fn transport(relay: Option<&str>) -> (Transport, bool) {
+pub fn transport(relay: Option<&str>, rendezvous: Option<&str>) -> (Transport, InvalidUrls) {
   let parsed = relay.map(str::parse::<::iroh::RelayUrl>);
-  let invalid = matches!(parsed, Some(Err(_)));
+  let rendezvous = rendezvous.map(|url| {
+    url::Url::parse(url)
+      .ok()
+      .filter(|url| matches!(url.scheme(), "http" | "https"))
+  });
+  let invalid = InvalidUrls {
+    relay: matches!(parsed, Some(Err(_))),
+    rendezvous: matches!(rendezvous, Some(None)),
+  };
   let relay = parsed.and_then(Result::ok);
-  (Transport::Iroh(iroh::IrohConfig::new(relay)), invalid)
+  let mut config = iroh::IrohConfig::new(relay, rendezvous.flatten());
+  config.no_rendezvous = invalid.rendezvous;
+  (Transport::Iroh(config), invalid)
 }
 
 /// Hôte compris.
@@ -107,6 +128,9 @@ pub const GUEST_CHANNEL: usize = 64;
 pub const CLOSE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Attente avant de fermer un lien dont la salle est fausse.
 pub const REFUSE_DELAY: Duration = Duration::from_secs(1);
+/// Attente de l'hôte resté seul (après au moins un invité) avant de fermer le jam : couvre la reconnexion d'un
+/// invité (1 + 3 + 6 s de délais plus l'établissement).
+pub const ALONE_GRACE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -118,9 +142,15 @@ pub enum Role {
 pub enum EndCause {
   Stopped,
   HostEnded,
+  /// Hôte : il a eu au moins un invité et n'en a plus depuis `ALONE_GRACE`.
+  Alone,
   Lost,
   Refused(Refusal),
   InvalidTicket,
+  /// Code court sans paquet de rendez-vous valable : faux, périmé, ou jam fini.
+  CodeNotFound,
+  /// Paquet de rendez-vous trop ancien : jam fini depuis plus de 3 min, ou horloge qui diverge de celle de l'hôte.
+  CodeStale,
   Transport(String),
 }
 
@@ -133,6 +163,10 @@ pub enum JamEvent {
   },
   /// Hôte : relais non joint dans le délai.
   RelayUnreachable,
+  /// Hôte : un tiers a publié sur la clé de rendez-vous, le code a changé.
+  CodeChanged {
+    ticket: String,
+  },
   /// Invité admis, et réadmis après une reconnexion.
   Joined {
     you: u32,

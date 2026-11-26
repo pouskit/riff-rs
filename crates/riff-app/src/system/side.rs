@@ -6,19 +6,59 @@ use super::{Command, Dedup, platform, startup};
 use super::{autostart, bridge};
 use crate::app::{App, Message};
 use crate::images::Decoded;
+use crate::settings::{DiscordStatus, DiscordTime};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Instant;
 
+/// Écart, en millisecondes, entre la position réelle et la position attendue à partir duquel l'activité est
+/// renvoyée : saut de lecture, attente du flux. Moins que cela : retard de la position entre deux `Event::Position`
+/// (`POSITION_PERIOD`, 250 ms), pas un saut.
+const DISCORD_DRIFT_MS: f64 = 2000.0;
+
 /// Ce que Discord a reçu en dernier : un changement de l'un de ces éléments renvoie l'activité.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DiscordKey {
   enabled: bool,
-  artist_status: bool,
-  /// `None` : aucune activité (rien en lecture).
-  track: Option<(String, String)>,
+  status: DiscordStatus,
+  time: DiscordTime,
+  cover: bool,
+  paused_shown: bool,
+  album_shown: bool,
+  /// Vitesse de lecture au millième : un changement renvoie `start` et la durée.
+  rate_milli: u32,
+  /// `None` : aucune activité (rien en lecture, ou en pause sans « Show when paused »).
+  track: Option<DiscordTrack>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DiscordTrack {
+  title: String,
+  artist: String,
+  album: String,
+  /// Image envoyée : une pochette publique qui arrive après le premier envoi la remplace.
+  cover: String,
+  /// Libellé de pause traduit, `None` en lecture : un changement de langue renvoie la carte en pause.
+  paused: Option<String>,
+}
+
+/// Position attendue depuis le dernier envoi, quand un minutage est affiché. Elle avance au rythme de la lecture
+/// (vitesse comprise) : seule une discontinuité renvoie l'activité, pas la vitesse ni le retard de la position.
+#[derive(Debug, Clone, Copy)]
+struct DiscordClock {
+  /// Position attendue à `at_ms`, en millisecondes.
+  expected_ms: f64,
+  /// Heure Unix de la dernière synchronisation, en millisecondes.
+  at_ms: i64,
+}
+
+/// Dernier envoi à Discord : l'état, et la position suivie quand un minutage est affiché.
+#[derive(Debug)]
+struct DiscordSent {
+  key: DiscordKey,
+  clock: Option<DiscordClock>,
 }
 
 /// Pochette du titre en cours, enregistrée sur disque pour la session média.
@@ -36,7 +76,7 @@ pub struct SystemSide {
   dedup: Dedup,
   started: Instant,
   cover: Cover,
-  discord: Option<DiscordKey>,
+  discord: Option<DiscordSent>,
   media_wanted: Option<bool>,
   /// Dernier état de la case « Always on top » envoyé au menu.
   always_on_top_sent: bool,
@@ -182,39 +222,77 @@ impl SystemSide {
   }
 
   fn sync_discord(&mut self, app: &App) {
+    let unix_ms = std::time::SystemTime::now()
+      .duration_since(std::time::UNIX_EPOCH)
+      .map_or(0, |elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(0));
+    self.push_discord(app, unix_ms);
+  }
+
+  /// Renvoie l'activité Discord si elle a changé ; `true` si un message est parti vers la tâche Discord.
+  /// Seule la position réelle compte : un glissement de la barre (`SeekPreview`) ne la change pas. Pendant une
+  /// résolution ou une attente du flux, la position est figée : l'écart n'est mesuré qu'une fois la lecture repartie.
+  fn push_discord(&mut self, app: &App, unix_ms: i64) -> bool {
+    let settings = &app.settings;
+    let paused = bridge::discord_paused_label(app);
     let key = DiscordKey {
-      enabled: app.settings.discord_rpc,
-      artist_status: app.settings.discord_artist_status,
+      enabled: settings.discord_rpc,
+      status: settings.discord_status,
+      time: settings.discord_time,
+      cover: settings.discord_cover,
+      paused_shown: settings.discord_paused,
+      album_shown: settings.discord_album,
+      rate_milli: (bridge::discord_rate(app) * 1000.0).round() as u32,
       track: app
         .player
         .current
         .as_ref()
-        .filter(|_| app.playback.is_playing)
-        .map(|track| {
-          (
-            track.title.clone().unwrap_or_default(),
-            track.artist.clone().unwrap_or_default(),
-          )
+        .filter(|_| paused.is_none() || settings.discord_paused)
+        .map(|track| DiscordTrack {
+          title: track.title.clone().unwrap_or_default(),
+          artist: track.artist.clone().unwrap_or_default(),
+          album: track.album.clone().unwrap_or_default(),
+          cover: bridge::discord_cover(track, settings).to_owned(),
+          paused: paused.clone(),
         }),
     };
-    if self.discord.as_ref() == Some(&key) {
-      return;
+    // Présence coupée, en pause ou sans minutage affiché, `start` n'est pas envoyé : il ne compte pas.
+    let timed =
+      key.enabled && paused.is_none() && key.track.is_some() && key.time != DiscordTime::Hidden;
+    let position_ms = app.playback.position.as_secs_f64() * 1000.0;
+    if let Some(sent) = &mut self.discord
+      && sent.key == key
+    {
+      match (&mut sent.clock, timed) {
+        (None, false) => return false,
+        (Some(clock), true) => {
+          let speed = bridge::discord_rate(app);
+          clock.expected_ms += (unix_ms - clock.at_ms) as f64 * speed;
+          clock.at_ms = unix_ms;
+          let waiting = app.player.loading || app.playback.buffering;
+          if waiting || (position_ms - clock.expected_ms).abs() < DISCORD_DRIFT_MS {
+            return false;
+          }
+        }
+        _ => {}
+      }
     }
     if self
       .discord
       .as_ref()
-      .is_none_or(|previous| previous.enabled != key.enabled)
+      .is_none_or(|previous| previous.key.enabled != key.enabled)
     {
       riff_core::discord::set_enabled(key.enabled);
     }
-    let unix_now = std::time::SystemTime::now()
-      .duration_since(std::time::UNIX_EPOCH)
-      .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
-    match bridge::discord_info(app, unix_now) {
+    match bridge::discord_info(app, unix_ms) {
       Some(info) if key.enabled => riff_core::discord::update(info),
       _ => riff_core::discord::clear(),
     }
-    self.discord = Some(key);
+    let clock = timed.then_some(DiscordClock {
+      expected_ms: position_ms,
+      at_ms: unix_ms,
+    });
+    self.discord = Some(DiscordSent { key, clock });
+    true
   }
 
   /// Nouveau titre : oublie l'ancienne pochette et rend l'adresse de la nouvelle.
@@ -321,6 +399,290 @@ mod tests {
   fn an_inactive_side_syncs_without_touching_the_system() {
     let mut side = SystemSide::inactive();
     assert_eq!(side.sync(&app()), None);
+  }
+
+  fn playing_app() -> App {
+    let mut app = app();
+    app.player.current = Some(crate::user_data::Track {
+      title: Some("Song".into()),
+      artist: Some("Band".into()),
+      duration: Some(200.0),
+      ..Default::default()
+    });
+    app.playback.is_playing = true;
+    app.playback.position = std::time::Duration::from_secs(30);
+    app
+  }
+
+  #[test]
+  fn discord_is_not_resent_while_the_track_plays_on() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    assert!(!side.push_discord(&app, 1_000_000));
+    assert!(
+      !side.push_discord(&app, 1_001_000),
+      "position figée : moins de 2 s"
+    );
+    app.playback.position = std::time::Duration::from_secs(40);
+    assert!(!side.push_discord(&app, 1_010_000), "lecture normale");
+  }
+
+  /// Position telle que `Event::Position` la publie : un tick toutes les 250 ms, lue en retard entre deux ticks.
+  fn at(app: &mut App, seconds: f64) {
+    app.playback.position = std::time::Duration::from_secs_f64(seconds);
+  }
+
+  #[test]
+  fn a_stale_position_is_not_taken_for_a_seek() {
+    // Début réel à 1000,9 s : la position lue a jusqu'à 250 ms de retard, l'arrondi des secondes donnait 1000 puis 1002.
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    at(&mut app, 1000.05);
+    assert!(side.push_discord(&app, 2_000_950));
+    at(&mut app, 1008.95);
+    assert!(
+      !side.push_discord(&app, 2_010_050),
+      "survol 200 ms après un tick"
+    );
+    at(&mut app, 1011.05);
+    assert!(!side.push_discord(&app, 2_011_950), "tick suivant");
+  }
+
+  #[test]
+  fn discord_is_not_resent_at_another_speed() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    app.settings.sound.audio.speed = 2.0;
+    assert!(side.push_discord(&app, 1_000_000));
+    for tick in 1..=40 {
+      at(&mut app, 30.0 + f64::from(tick) * 0.5);
+      assert!(
+        !side.push_discord(&app, 1_000_000 + i64::from(tick) * 250),
+        "{tick}"
+      );
+    }
+    at(&mut app, 90.0);
+    assert!(side.push_discord(&app, 1_010_250), "saut à vitesse 2");
+  }
+
+  #[test]
+  fn discord_follows_the_jam_speed_not_the_personal_one() {
+    use crate::jam::protocol::{JamSound, SharedSound};
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    let mut jam = crate::jam::state::JamState::new(crate::jam::Role::Guest, "moi");
+    jam.shared = Some(SharedSound {
+      sv: 1,
+      sound: JamSound {
+        speed: 2.0,
+        ..JamSound::default()
+      },
+      ..SharedSound::default()
+    });
+    app.jam = Some(Box::new(jam));
+    assert_eq!(app.settings.sound.audio.speed, 1.0);
+    assert_eq!(bridge::discord_rate(&app), 2.0);
+    assert!(side.push_discord(&app, 1_000_000));
+    for tick in 1..=40 {
+      at(&mut app, 30.0 + f64::from(tick) * 0.5);
+      assert!(
+        !side.push_discord(&app, 1_000_000 + i64::from(tick) * 250),
+        "{tick}"
+      );
+    }
+    let shared = app.jam.as_mut().and_then(|jam| jam.shared.as_mut());
+    let shared = shared.expect("effets partagés");
+    shared.sv = 2;
+    shared.sound.speed = 1.0;
+    assert!(
+      side.push_discord(&app, 1_010_000),
+      "la vitesse du jam change"
+    );
+    assert!(!side.push_discord(&app, 1_010_000));
+    app.jam = None;
+    app.settings.sound.audio.speed = 1.5;
+    assert!(side.push_discord(&app, 1_010_000), "fin du jam");
+  }
+
+  #[test]
+  fn a_speed_drag_resends_discord_only_on_release() {
+    use crate::app::Message;
+    use crate::audio_prefs::{AudioMessage, SoundField};
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    for step in 1..=20_i16 {
+      app.update(Message::AudioPrefs(AudioMessage::Set(
+        SoundField::Speed,
+        1.0 + f32::from(step) * 0.05,
+      )));
+      assert!(!side.push_discord(&app, 1_000_000), "pas {step}");
+    }
+    app.update(Message::AudioPrefs(AudioMessage::Commit));
+    assert!(side.push_discord(&app, 1_000_000), "relâché à vitesse 2");
+    assert!(!side.push_discord(&app, 1_000_000));
+  }
+
+  #[test]
+  fn a_smooth_preset_resends_discord_once_when_it_ends() {
+    use crate::app::Message;
+    use crate::audio_prefs::AudioMessage;
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    app.update(Message::AudioPrefs(AudioMessage::ApplyPreset(
+      "p_slowed".to_string(),
+    )));
+    let mut resent = 0;
+    while app.ui.audio.tween.is_some() {
+      app.update(Message::AudioPrefs(AudioMessage::TweenTick));
+      resent += usize::from(side.push_discord(&app, 1_000_000));
+    }
+    assert_eq!(resent, 1);
+    assert!(app.settings.sound.audio.speed_pitch < 1.0);
+  }
+
+  #[test]
+  fn a_speed_change_resends_discord_once() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    app.settings.sound.audio.speed = 2.0;
+    assert!(side.push_discord(&app, 1_000_000), "vitesse 2");
+    assert!(!side.push_discord(&app, 1_000_000));
+    app.settings.sound.audio.speed = 2.0004;
+    assert!(!side.push_discord(&app, 1_000_000), "sous le millième");
+    app.settings.sound.audio.speed = 0.82;
+    assert!(side.push_discord(&app, 1_000_000), "vitesse 0,82");
+  }
+
+  #[test]
+  fn a_stall_resends_discord_once_playback_goes_on() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    app.playback.buffering = true;
+    for tick in 1..=20 {
+      assert!(
+        !side.push_discord(&app, 1_000_000 + i64::from(tick) * 250),
+        "{tick}"
+      );
+    }
+    app.playback.buffering = false;
+    assert!(side.push_discord(&app, 1_005_250), "minutage recalé");
+    at(&mut app, 30.25);
+    assert!(!side.push_discord(&app, 1_005_500));
+  }
+
+  #[test]
+  fn the_next_track_resolving_is_not_a_pause() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    app.settings.discord_paused = true;
+    assert!(side.push_discord(&app, 1_000_000));
+    app.player.current.as_mut().unwrap().title = Some("Song 2".into());
+    app.playback.is_playing = false;
+    app.player.loading = true;
+    at(&mut app, 0.0);
+    assert!(side.push_discord(&app, 1_000_000), "nouveau titre");
+    assert!(!side.push_discord(&app, 1_001_000));
+    app.player.loading = false;
+    app.playback.is_playing = true;
+    assert!(
+      !side.push_discord(&app, 1_001_500),
+      "chargé en moins de 2 s"
+    );
+  }
+
+  #[test]
+  fn a_late_public_cover_resends_discord() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    app.settings.discord_time = DiscordTime::Hidden;
+    assert!(side.push_discord(&app, 1_000_000));
+    app.player.current.as_mut().unwrap().thumbnail = Some("https://img/a.jpg".into());
+    assert!(side.push_discord(&app, 1_000_000));
+    assert!(!side.push_discord(&app, 1_000_000));
+  }
+
+  #[test]
+  fn a_language_change_resends_the_paused_card() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    app.settings.discord_paused = true;
+    app.playback.is_playing = false;
+    assert!(side.push_discord(&app, 1_000_000));
+    app.i18n = Arc::new(I18n::load("fr", Path::new("absent")));
+    assert!(side.push_discord(&app, 1_000_000), "« En pause »");
+    assert!(!side.push_discord(&app, 1_000_000));
+  }
+
+  #[test]
+  fn a_seek_resends_discord_but_dragging_the_bar_does_not() {
+    use crate::ui::PlayerMessage;
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    let _ = app.update(Message::Player(PlayerMessage::SeekPreview(120.0)));
+    assert!(
+      !side.push_discord(&app, 1_000_000),
+      "aperçu : position inchangée"
+    );
+    let _ = app.update(Message::Player(PlayerMessage::SeekRelease));
+    assert_eq!(app.playback.position, std::time::Duration::from_secs(120));
+    assert!(side.push_discord(&app, 1_000_000));
+    app.playback.position = std::time::Duration::from_secs(118);
+    assert!(side.push_discord(&app, 1_000_000), "2 s en arrière");
+  }
+
+  #[test]
+  fn a_pause_resends_discord_and_the_paused_card_stays_still() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    app.playback.is_playing = false;
+    assert!(side.push_discord(&app, 1_005_000), "effacée en pause");
+    assert!(!side.push_discord(&app, 1_100_000));
+    app.settings.discord_paused = true;
+    assert!(side.push_discord(&app, 1_100_000), "carte en pause");
+    assert!(
+      !side.push_discord(&app, 1_200_000),
+      "aucun minutage en pause"
+    );
+    app.playback.is_playing = true;
+    assert!(side.push_discord(&app, 1_200_000), "reprise");
+  }
+
+  #[test]
+  fn every_discord_setting_and_the_album_resend_the_activity() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    assert!(side.push_discord(&app, 1_000_000));
+    let changes: [fn(&mut App); 7] = [
+      |app| app.settings.discord_status = DiscordStatus::Track,
+      |app| app.settings.discord_time = DiscordTime::Elapsed,
+      |app| app.settings.discord_cover = false,
+      |app| app.settings.discord_paused = true,
+      |app| app.settings.discord_album = false,
+      |app| app.player.current.as_mut().unwrap().album = Some("Record".into()),
+      |app| app.settings.discord_rpc = false,
+    ];
+    for change in changes {
+      change(&mut app);
+      assert!(side.push_discord(&app, 1_000_000));
+      assert!(!side.push_discord(&app, 1_000_000));
+    }
+  }
+
+  #[test]
+  fn the_hidden_time_ignores_the_position() {
+    let mut side = SystemSide::inactive();
+    let mut app = playing_app();
+    app.settings.discord_time = DiscordTime::Hidden;
+    assert!(side.push_discord(&app, 1_000_000));
+    app.playback.position = std::time::Duration::from_secs(150);
+    assert!(!side.push_discord(&app, 1_000_000));
   }
 
   #[test]

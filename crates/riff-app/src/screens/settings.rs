@@ -33,6 +33,7 @@ const SEARCH_ID: &str = "settings-search";
 const ACCENT_ID: &str = "settings-accent";
 pub(super) const NICKNAME_ID: &str = "settings-nickname";
 const JAM_RELAY_ID: &str = "settings-jam-relay";
+const JAM_RENDEZVOUS_ID: &str = "settings-jam-rendezvous";
 /// Version affichée par `.settings-version-tag`.
 pub(super) const VERSION_TAG: &str = "v44.1.1";
 
@@ -95,7 +96,7 @@ impl Palette {
     }
   }
 
-  fn of(app: &App) -> Self {
+  pub(super) fn of(app: &App) -> Self {
     let s = &app.theme.scheme;
     Self {
       roles: Roles::of(app),
@@ -886,6 +887,7 @@ fn input_control<'a>(app: &'a App, key: TextKey) -> Element<'a, Message> {
   let value = app.text_pref(key);
   let id = match key {
     TextKey::JamRelay => JAM_RELAY_ID,
+    TextKey::JamRendezvous => JAM_RENDEZVOUS_ID,
     _ => NICKNAME_ID,
   };
   container(focusable(text_field(

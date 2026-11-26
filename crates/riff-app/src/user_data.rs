@@ -574,6 +574,13 @@ pub struct BlockedTrack {
     skip_serializing_if = "Option::is_none"
   )]
   pub artist: Option<String>,
+  /// Chemin d'un fichier local bloqué : seul identifiant d'un fichier sans artiste. Clé propre à riff-rs.
+  #[serde(
+    default,
+    deserialize_with = "de_string",
+    skip_serializing_if = "Option::is_none"
+  )]
+  pub path: Option<String>,
   #[serde(flatten)]
   pub extra: Map<String, Value>,
 }

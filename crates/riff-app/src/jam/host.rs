@@ -2,12 +2,12 @@
 
 use super::protocol::{
   self, ClientMsg, DecodeError, EndReason, HostMsg, MAX_FRAME, MAX_HELLO_FRAME, Notice, NoticeKind,
-  Participant, PlaybackState, QueueState, RateLimit, Refusal,
+  PROTOCOL_VERSION, Participant, PlaybackState, QueueState, RateLimit, Refusal,
 };
 use super::transport::{Link, Listener, Room, Transport};
 use super::{
-  AbortOnDrop, CLOSE_TIMEOUT, EndCause, GUEST_CHANNEL, HANDSHAKE_TIMEOUT, JamEvent, JamOut,
-  MAX_FRAMES_PER_SEC, MAX_NOTICES_PER_SEC, MAX_PARTICIPANTS, MAX_PENDING, PEER_SILENCE,
+  ALONE_GRACE, AbortOnDrop, CLOSE_TIMEOUT, EndCause, GUEST_CHANNEL, HANDSHAKE_TIMEOUT, JamEvent,
+  JamOut, MAX_FRAMES_PER_SEC, MAX_NOTICES_PER_SEC, MAX_PARTICIPANTS, MAX_PENDING, PEER_SILENCE,
   PLAYBACK_WINDOW, QUEUE_WINDOW, REFUSE_DELAY, millis_since,
 };
 use std::collections::HashMap;
@@ -28,6 +28,8 @@ pub struct HostConfig {
   pub guest_channel: usize,
   pub max_participants: usize,
   pub max_pending: usize,
+  /// Attente avant de fermer un jam qui a eu des invités et n'en a plus.
+  pub alone_grace: Duration,
 }
 
 impl Default for HostConfig {
@@ -41,6 +43,7 @@ impl Default for HostConfig {
       guest_channel: GUEST_CHANNEL,
       max_participants: MAX_PARTICIPANTS,
       max_pending: MAX_PENDING,
+      alone_grace: ALONE_GRACE,
     }
   }
 }
@@ -79,6 +82,10 @@ struct Host {
   name: String,
   next_id: u32,
   guests: HashMap<u32, Guest>,
+  /// Vrai dès qu'un invité a été admis : un jam qui n'en a jamais eu n'est jamais fermé pour solitude.
+  ever_guest: bool,
+  /// Instant où la liste d'invités est devenue vide (après au moins un invité).
+  alone_since: Option<Instant>,
   queue: QueueState,
   playback: PlaybackState,
   /// États en attente de diffusion : seule la dernière valeur compte.
@@ -153,6 +160,7 @@ pub(super) async fn run(
   if !listener.relay_reached() {
     let _ = events.send(JamEvent::RelayUnreachable);
   }
+  let mut codes = listener.codes();
   let (inner_tx, mut inner_rx) = mpsc::unbounded_channel();
   let mut pending = JoinSet::new();
   let mut host = Host {
@@ -163,6 +171,8 @@ pub(super) async fn run(
     name: protocol::sanitize_name(&name),
     next_id: 1,
     guests: HashMap::new(),
+    ever_guest: false,
+    alone_since: None,
     queue: QueueState::default(),
     playback: PlaybackState::default(),
     pending: Pending::default(),
@@ -176,8 +186,24 @@ pub(super) async fn run(
       .pending
       .deadline()
       .map(|at| at.saturating_duration_since(Instant::now()));
+    let alone_in = host
+      .alone_deadline()
+      .map(|at| at.saturating_duration_since(Instant::now()));
     tokio::select! {
       () = tokio::time::sleep(flush_in.unwrap_or_default()), if flush_in.is_some() => host.flush(),
+      () = tokio::time::sleep(alone_in.unwrap_or_default()), if alone_in.is_some() => {
+        // Une arrivée déjà postée (ou un départ) passe avant la décision.
+        while let Ok(message) = inner_rx.try_recv() {
+          host.on_inner(message);
+        }
+        if host.alone_deadline().is_some_and(|at| at <= Instant::now()) {
+          if pending.is_empty() {
+            break EndCause::Alone;
+          }
+          // Poignée de main en cours : l'invité qui arrive n'est pas coupé, on réarme.
+          host.alone_since = Some(Instant::now());
+        }
+      },
       incoming = listener.accept() => match incoming {
         None => break EndCause::Transport("closed".to_string()),
         Some(Ok(link)) => {
@@ -188,6 +214,9 @@ pub(super) async fn run(
           }
         }
         Some(Err(err)) => tracing::debug!(%err, "jam: accept failed"),
+      },
+      ticket = codes.changed() => {
+        let _ = events.send(JamEvent::CodeChanged { ticket });
       },
       Some(message) = inner_rx.recv() => host.on_inner(message),
       Some(_) = pending.join_next(), if !pending.is_empty() => {},
@@ -228,12 +257,15 @@ async fn handshake(link: Link, room: Room, cfg: HostConfig, inner: mpsc::Unbound
   };
   let hello = match protocol::decode::<ClientMsg>(&body) {
     Ok(ClientMsg::Hello { room, name, .. }) => (room, name),
-    Err(DecodeError::Version(_)) => return refuse(&mut writer, Refusal::Version).await,
+    Err(DecodeError::Version(version)) => {
+      let version = u32::try_from(version).unwrap_or(PROTOCOL_VERSION);
+      return refuse(&mut writer, Refusal::Version, version).await;
+    }
     _ => return,
   };
   let valid = Room::from_hex(&hello.0).is_some_and(|given| given.ct_eq(&room));
   if !valid {
-    refuse(&mut writer, Refusal::Room).await;
+    refuse(&mut writer, Refusal::Room, PROTOCOL_VERSION).await;
     tokio::time::sleep(cfg.refuse_delay).await;
     return;
   }
@@ -247,8 +279,9 @@ async fn handshake(link: Link, room: Room, cfg: HostConfig, inner: mpsc::Unbound
   let _ = inner.send(Inner::Admit(Box::new(admission)));
 }
 
-async fn refuse(writer: &mut Writer, reason: Refusal) {
-  if let Ok(body) = protocol::encode(&HostMsg::Refused { reason }) {
+/// `version` est celle de l'enveloppe : pour `Refusal::Version`, celle du `hello`, que le pair sait décoder.
+async fn refuse(writer: &mut Writer, reason: Refusal, version: u32) {
+  if let Ok(body) = protocol::encode_versioned(&HostMsg::Refused { reason }, version) {
     let _ = protocol::write_frame(writer, &body).await;
   }
   let _ = writer.shutdown().await;
@@ -400,6 +433,8 @@ impl Host {
       self.cfg.clone(),
       self.epoch,
     )));
+    self.ever_guest = true;
+    self.alone_since = None;
     self.guests.insert(
       id,
       Guest {
@@ -431,11 +466,19 @@ impl Host {
     );
   }
 
+  /// Échéance de fermeture de l'hôte resté seul.
+  fn alone_deadline(&self) -> Option<Instant> {
+    self.alone_since.map(|at| at + self.cfg.alone_grace)
+  }
+
   fn remove_guest(&mut self, id: u32) {
     let Some(guest) = self.guests.remove(&id) else {
       return;
     };
     tracing::debug!(id, "jam: guest left");
+    if self.guests.is_empty() && self.ever_guest && self.alone_since.is_none() {
+      self.alone_since = Some(Instant::now());
+    }
     // Un pair qui ne lit plus bloquerait l'écriture : on l'annule, ce qui lâche le flux et ferme la connexion.
     guest.writer.abort();
     let participants = self.participants();

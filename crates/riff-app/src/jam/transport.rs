@@ -1,6 +1,8 @@
 //! Interface de transport du jam : un flux bidirectionnel, fiable et ordonné, par participant.
+use super::code::{self, JamCode};
 use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::sync::watch;
 
 pub const ROOM_LEN: usize = 16;
 
@@ -92,6 +94,12 @@ pub enum Security {
 pub enum TransportError {
   #[error("invalid ticket")]
   InvalidTicket,
+  /// Code court sans paquet de rendez-vous valable : jam fini, code faux ou périmé.
+  #[error("code not found")]
+  NotFound,
+  /// Paquet de rendez-vous trop ancien : jam fini, ou horloge de l'invité qui diverge de celle de l'hôte.
+  #[error("code expired")]
+  Stale,
   #[error("unreachable")]
   Unreachable,
   #[error("closed")]
@@ -121,7 +129,7 @@ pub struct Listener {
 }
 
 impl Listener {
-  /// Code d'invitation copiable, porte la salle.
+  /// Code d'invitation copiable : code court (`K7Q-M2X`), ou ancien code long si le rendez-vous est indisponible.
   #[must_use]
   pub fn ticket(&self) -> &str {
     &self.ticket
@@ -146,6 +154,16 @@ impl Listener {
     }
   }
 
+  /// Suit les changements de code : l'hôte en change quand un tiers publie sur sa clé de rendez-vous.
+  #[must_use]
+  pub fn codes(&self) -> CodeWatch {
+    match self.kind {
+      ListenerKind::Iroh(ref listener) => CodeWatch(listener.codes()),
+      #[cfg(test)]
+      ListenerKind::Memory(_) => CodeWatch(None),
+    }
+  }
+
   /// Ferme l'écoute et toutes les connexions.
   pub async fn close(self) {
     match self.kind {
@@ -153,6 +171,22 @@ impl Listener {
       #[cfg(test)]
       ListenerKind::Memory(listener) => listener.close(),
     }
+  }
+}
+
+/// Changements du code d'invitation d'un hôte.
+#[derive(Debug)]
+pub struct CodeWatch(Option<watch::Receiver<String>>);
+
+impl CodeWatch {
+  /// Prochain code ; n'aboutit jamais si le code ne change pas.
+  pub async fn changed(&mut self) -> String {
+    if let Some(receiver) = self.0.as_mut()
+      && receiver.changed().await.is_ok()
+    {
+      return receiver.borrow_and_update().clone();
+    }
+    std::future::pending().await
   }
 }
 
@@ -168,6 +202,15 @@ enum Address {
 pub struct Target {
   pub room: Room,
   address: Address,
+}
+
+/// Saisie d'un invité reconnue, avant toute résolution.
+#[derive(Debug, Clone)]
+pub enum Lookup {
+  /// Ancien code d'invitation : l'adresse y est déjà.
+  Direct(Target),
+  /// Code court : l'adresse se lit sur le relais de rendez-vous.
+  Code(JamCode),
 }
 
 #[derive(Debug)]
@@ -193,6 +236,27 @@ impl Dialer {
       (DialerKind::Memory(hub), Address::Memory(listener)) => hub.connect(*listener).await,
       #[cfg(test)]
       _ => Err(TransportError::InvalidTicket),
+    }
+  }
+
+  /// Cible de la saisie ; un code court passe par le relais de rendez-vous.
+  ///
+  /// # Errors
+  /// [`TransportError::NotFound`] : code inconnu ou jam fini. [`TransportError::Stale`] : paquet périmé.
+  /// [`TransportError::Unreachable`] : relais
+  /// de rendez-vous injoignable.
+  pub async fn resolve(&self, lookup: &Lookup) -> Result<Target, TransportError> {
+    match (lookup, &self.kind) {
+      (Lookup::Direct(target), _) => Ok(target.clone()),
+      (Lookup::Code(code), DialerKind::Iroh(dialer)) => {
+        let (room, addr) = dialer.resolve(code).await?;
+        Ok(Target {
+          room,
+          address: Address::Iroh(addr),
+        })
+      }
+      #[cfg(test)]
+      (Lookup::Code(_), DialerKind::Memory(_)) => Err(TransportError::InvalidTicket),
     }
   }
 
@@ -228,6 +292,30 @@ impl Transport {
     }
   }
 
+  /// Reconnaît la saisie d'un invité : ancien code d'invitation ou code court (saisie tolérante).
+  ///
+  /// # Errors
+  /// [`TransportError::InvalidTicket`] si la saisie n'est pas un code de ce transport.
+  pub fn classify(&self, input: &str) -> Result<Lookup, TransportError> {
+    match *self {
+      Self::Iroh(_) => {
+        if code::is_legacy(input) {
+          self
+            .parse(&input.trim().to_ascii_lowercase())
+            .map(Lookup::Direct)
+        } else {
+          JamCode::parse(input)
+            .map(Lookup::Code)
+            .ok_or(TransportError::InvalidTicket)
+        }
+      }
+      #[cfg(test)]
+      Self::Memory(_) => self.parse(input).map(Lookup::Direct),
+    }
+  }
+
+  /// Cible d'un code d'invitation qui porte déjà l'adresse (ancien code, ou transport en mémoire).
+  ///
   /// # Errors
   /// [`TransportError::InvalidTicket`] si le code n'est pas celui de ce transport.
   pub fn parse(&self, ticket: &str) -> Result<Target, TransportError> {

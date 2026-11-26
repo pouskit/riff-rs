@@ -1,12 +1,14 @@
 //! Tests du jam au niveau `App` : aucune fenêtre, aucun réseau, `App` piloté par `Message::Jam`.
 
 use super::protocol::{
-  Current, Entry, Notice, NoticeKind, Op, Participant, PlaybackState, QueueState, Refusal,
-  WireTrack,
+  Current, Entry, JamSound, Notice, NoticeKind, Op, Participant, PlaybackState, QueueState,
+  Refusal, SharedSound, WireTrack,
 };
 use super::{EndCause, JamEvent, JamMessage, JamOut};
 use crate::app::{App, Effect, Message};
+use crate::audio_prefs::{AudioMessage, Sound, SoundField};
 use crate::i18n::I18n;
+use crate::manage::ManageMessage;
 use crate::settings::NativeSettings;
 use crate::stream::{ResolveOptions, stream_info_query};
 use crate::ui::{ListId, PlayerMessage, TrackCommand, UiMessage};
@@ -614,6 +616,972 @@ fn the_end_of_the_jam_gives_the_guest_back_the_previous_queue() {
 }
 
 #[test]
+fn the_host_left_alone_gets_an_info_toast_and_keeps_the_queue() {
+  let (mut app, _) = host();
+  let before = queue_ids(&app)
+    .iter()
+    .map(|id| id.to_string())
+    .collect::<Vec<_>>();
+  let effects = event(&mut app, JamEvent::Ended(EndCause::Alone));
+  assert!(app.jam.is_none());
+  assert_eq!(queue_ids(&app), before);
+  assert_eq!(current_id(&app), "a");
+  assert!(app.playback.is_playing);
+  assert!(has_toast(
+    &effects,
+    "The Jam ended because everyone else left"
+  ));
+  assert!(effects.iter().any(|effect| matches!(
+    effect,
+    Effect::Toast(text, crate::widgets::toast::ToastKind::Info) if text.contains("everyone else left")
+  )));
+}
+
+// ---- Effets partagés ----
+
+fn audio_pref(app: &mut App, message: AudioMessage) -> Vec<Effect> {
+  app.update(Message::AudioPrefs(message))
+}
+
+fn slowed() -> JamSound {
+  JamSound {
+    speed_pitch: 0.82,
+    reverb: 65.0,
+    echo: 15.0,
+    ..JamSound::default()
+  }
+}
+
+fn sound_op(sound: JamSound) -> Op {
+  Op::Sound {
+    sound,
+    smooth: false,
+    preset: None,
+  }
+}
+
+/// Réglages envoyés au moteur par ces effets.
+fn engine_sounds(effects: &[Effect]) -> Vec<riff_audio::AudioSettings> {
+  effects
+    .iter()
+    .filter_map(|effect| match effect {
+      Effect::AudioSound(settings) => Some(**settings),
+      _ => None,
+    })
+    .collect()
+}
+
+/// Son que ces effets écrivent dans `native-settings.json`.
+fn saved_sounds(effects: &[Effect]) -> Vec<Sound> {
+  effects
+    .iter()
+    .filter_map(|effect| match effect {
+      Effect::SaveSettings(settings) => Some(settings.sound.audio),
+      _ => None,
+    })
+    .collect()
+}
+
+fn commands(effects: &[Effect]) -> Vec<(u64, &Op)> {
+  sent(effects)
+    .into_iter()
+    .filter_map(|out| match out {
+      JamOut::Command { id, op } => Some((*id, op)),
+      _ => None,
+    })
+    .collect()
+}
+
+fn shared_of(sound: JamSound, sv: u64) -> SharedSound {
+  SharedSound {
+    sv,
+    sound,
+    ..SharedSound::default()
+  }
+}
+
+/// Invité admis avec des effets, `age` après l'ancre de l'hôte.
+fn guest_joined_with(
+  mut app: App,
+  shared: SharedSound,
+  pos_ms: u64,
+  age: Duration,
+  playing: bool,
+) -> (App, Vec<Effect>) {
+  jam(&mut app, JamMessage::CodeInput("riffjam-test".to_string()));
+  jam(&mut app, JamMessage::Join);
+  let anchor = Instant::now().checked_sub(age).expect("instant");
+  let mut playback = playback_state(&AB, 0, 1, 1, pos_ms, playing);
+  playback.sound = shared;
+  let effects = event(
+    &mut app,
+    JamEvent::Joined {
+      you: 1,
+      participants: participants(),
+      queue: QueueState {
+        qv: 1,
+        entries: AB
+          .iter()
+          .enumerate()
+          .map(|(index, (id, platform))| Entry {
+            uid: index as u64 + 1,
+            by: 0,
+            by_name: "User".to_string(),
+            track: wire(id, platform),
+          })
+          .collect(),
+      },
+      playback,
+      anchor,
+    },
+  );
+  (app, effects)
+}
+
+/// Même état de lecture qu'à l'admission, avec de nouveaux effets.
+fn sound_state(shared: SharedSound, pv: u64) -> PlaybackState {
+  let mut state = playback_state(&AB, 0, pv, 1, 0, true);
+  state.sound = shared;
+  state
+}
+
+/// Hôte dont le son est réglé avant le démarrage du jam.
+fn host_with_sound(prepare: impl FnOnce(&mut App)) -> (App, Vec<Effect>) {
+  let mut app = base_app(vec![track("a"), track("b"), track("c")]);
+  prepare(&mut app);
+  app.update(Message::Ui(UiMessage::RowActivated(ListId::Favorites, 0)));
+  loaded(&mut app);
+  jam(&mut app, JamMessage::Start);
+  event(&mut app, JamEvent::Participants(participants()));
+  let effects = event(
+    &mut app,
+    JamEvent::Hosting {
+      ticket: "riffjam-test".to_string(),
+    },
+  );
+  (app, effects)
+}
+
+#[test]
+fn the_effects_of_the_host_become_those_of_the_jam() {
+  let (app, effects) = host_with_sound(|app| {
+    app.ui.audio.live.speed_pitch = 0.82;
+    app.ui.audio.live.reverb = 65.0;
+    app.ui.audio.live.echo = 15.0;
+    app.settings.sound.active_preset = "p_slowed".to_string();
+  });
+  let jam = app.jam.as_ref().unwrap();
+  let shared = jam.shared.as_ref().expect("effets du jam");
+  assert_eq!(shared.sound, slowed());
+  assert_eq!(shared.sv, 0);
+  assert_eq!(shared.preset.as_deref(), Some("p_slowed"));
+  assert_eq!(
+    jam.personal.expect("son personnel").speed_pitch.to_bits(),
+    0.82_f32.to_bits()
+  );
+  // Le premier état diffusé (et donc le cache de `welcome`) porte les effets.
+  assert_eq!(playbacks(&effects)[0].sound.sound, slowed());
+}
+
+#[test]
+fn a_host_without_effects_shares_no_effect() {
+  let (app, effects) = host();
+  assert_eq!(
+    app.jam.as_ref().unwrap().shared.as_ref().unwrap().sound,
+    JamSound::default()
+  );
+  assert_eq!(playbacks(&effects)[0].sound.sound, JamSound::default());
+}
+
+#[test]
+fn a_guest_sound_op_is_applied_by_the_host_and_broadcast_with_new_counters() {
+  let (mut app, _) = host();
+  let pv = app.jam.as_ref().unwrap().pv;
+  let effects = guest_op(&mut app, sound_op(slowed()));
+  let engine = engine_sounds(&effects);
+  assert_eq!(engine.len(), 1);
+  assert!((engine[0].speed_pitch - 0.82).abs() < f32::EPSILON);
+  assert!((engine[0].reverb - 65.0).abs() < f32::EPSILON);
+  let states = playbacks(&effects);
+  assert_eq!(states.len(), 1);
+  assert_eq!(states[0].pv, pv + 1);
+  assert_eq!(states[0].sound.sv, 1);
+  assert_eq!(states[0].sound.by, 1);
+  assert_eq!(states[0].sound.sound, slowed());
+  assert_eq!(states[0].sound.ack_of(1), Some(7));
+  assert_eq!(states[0].pos_ms / 1000, 0);
+}
+
+#[test]
+fn a_sound_op_is_sanitized_by_the_host() {
+  let (mut app, _) = host();
+  let wild = JamSound {
+    speed: 50.0,
+    reverb: f32::NAN,
+    ..JamSound::default()
+  };
+  let effects = guest_op(
+    &mut app,
+    Op::Sound {
+      sound: wild,
+      smooth: false,
+      preset: Some("custom_1".to_string()),
+    },
+  );
+  let state = playbacks(&effects)[0];
+  assert!((state.sound.sound.speed - 2.0).abs() < f32::EPSILON);
+  assert!(state.sound.sound.reverb.abs() < f32::EPSILON);
+  assert_eq!(state.sound.preset, None);
+  let kept = guest_op(
+    &mut app,
+    Op::Sound {
+      sound: slowed(),
+      smooth: false,
+      preset: Some("p_slowed".to_string()),
+    },
+  );
+  assert_eq!(
+    playbacks(&kept)[0].sound.preset.as_deref(),
+    Some("p_slowed")
+  );
+}
+
+#[test]
+fn the_host_keeps_its_volume_and_equalizer_when_a_guest_sets_effects() {
+  let (mut app, _) = host();
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Volume, 1.4));
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Low, 3.0));
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Band(2), -4.0));
+  let effects = guest_op(&mut app, sound_op(slowed()));
+  let engine = engine_sounds(&effects);
+  assert!((engine[0].volume - 1.4).abs() < f32::EPSILON);
+  assert!((engine[0].eq.low - 3.0).abs() < f32::EPSILON);
+  assert!((engine[0].eq.bands[2] + 4.0).abs() < f32::EPSILON);
+  assert!((app.ui.audio.live.volume - 1.4).abs() < f32::EPSILON);
+}
+
+#[test]
+fn a_smooth_sound_op_moves_the_host_through_the_transition() {
+  let (mut app, _) = host();
+  let effects = guest_op(
+    &mut app,
+    Op::Sound {
+      sound: slowed(),
+      smooth: true,
+      preset: None,
+    },
+  );
+  assert!(engine_sounds(&effects).is_empty());
+  assert!(app.ui.audio.tween.is_some());
+  for _ in 0..30 {
+    audio_pref(&mut app, AudioMessage::TweenTick);
+  }
+  assert!(app.ui.audio.tween.is_none());
+  assert!((app.ui.audio.live.speed_pitch - 0.82).abs() < f32::EPSILON);
+}
+
+#[test]
+fn two_guests_setting_effects_together_converge_on_the_last_one_with_both_acks() {
+  let (mut app, _) = host();
+  event(
+    &mut app,
+    JamEvent::GuestOp {
+      from: 1,
+      id: 7,
+      op: sound_op(slowed()),
+    },
+  );
+  let last = JamSound {
+    distortion: 75.0,
+    ..JamSound::default()
+  };
+  let effects = event(
+    &mut app,
+    JamEvent::GuestOp {
+      from: 2,
+      id: 3,
+      op: sound_op(last),
+    },
+  );
+  let state = playbacks(&effects)[0];
+  assert_eq!(state.sound.sv, 2);
+  assert_eq!(state.sound.by, 2);
+  assert_eq!(state.sound.sound, last);
+  assert_eq!(state.sound.ack_of(1), Some(7));
+  assert_eq!(state.sound.ack_of(2), Some(3));
+}
+
+#[test]
+fn a_guest_leaving_keeps_the_effects_of_the_others() {
+  let (mut app, _) = host();
+  guest_op(&mut app, sound_op(slowed()));
+  let alone = vec![participants()[0].clone()];
+  let effects = event(&mut app, JamEvent::Participants(alone));
+  assert!(engine_sounds(&effects).is_empty());
+  assert!((app.ui.audio.live.speed_pitch - 0.82).abs() < f32::EPSILON);
+}
+
+#[test]
+fn setting_a_slider_alone_sends_nothing_and_releasing_it_sends_the_effects() {
+  let (mut app, _, _) = guest(&AB, 0, 0, true, Vec::new());
+  for step in 1..=20_i16 {
+    let effects = audio_pref(
+      &mut app,
+      AudioMessage::Set(SoundField::Reverb, f32::from(step)),
+    );
+    assert!(sent(&effects).is_empty());
+  }
+  assert!((app.ui.audio.live.reverb - 20.0).abs() < f32::EPSILON);
+  let released = audio_pref(&mut app, AudioMessage::Commit);
+  let sent = commands(&released);
+  assert_eq!(sent.len(), 1);
+  match sent[0].1 {
+    Op::Sound { sound, .. } => assert!((sound.reverb - 20.0).abs() < f32::EPSILON),
+    other => panic!("Op::Sound attendu, reçu {other:?}"),
+  }
+  assert_eq!(app.jam.as_ref().unwrap().sound_pending, Some(sent[0].0));
+}
+
+#[test]
+fn releasing_a_personal_slider_sends_no_effect() {
+  let (mut app, _, _) = guest(&AB, 0, 0, true, Vec::new());
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Volume, 1.5));
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Mid, 4.0));
+  let released = audio_pref(&mut app, AudioMessage::Commit);
+  assert!(commands(&released).is_empty());
+  assert!(app.jam.as_ref().unwrap().sound_pending.is_none());
+}
+
+#[test]
+fn releasing_a_personal_slider_during_a_received_transition_keeps_the_effects_of_the_jam() {
+  let (mut app, _) = host();
+  guest_op(
+    &mut app,
+    Op::Sound {
+      sound: slowed(),
+      smooth: true,
+      preset: None,
+    },
+  );
+  audio_pref(&mut app, AudioMessage::TweenTick);
+  assert!(app.ui.audio.tween.is_some());
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Volume, 1.5));
+  let released = audio_pref(&mut app, AudioMessage::Commit);
+  assert!(playbacks(&released).is_empty());
+  let shared = app.jam.as_ref().unwrap().shared.as_ref().unwrap();
+  assert_eq!(shared.sv, 1);
+  assert!((shared.sound.reverb - 65.0).abs() < f32::EPSILON);
+  assert!((app.ui.audio.live.reverb - 65.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn the_host_releasing_a_slider_before_the_relay_is_ready_shares_the_effects() {
+  let mut app = base_app(vec![track("a"), track("b"), track("c")]);
+  app.update(Message::Ui(UiMessage::RowActivated(ListId::Favorites, 0)));
+  loaded(&mut app);
+  jam(&mut app, JamMessage::Start);
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Reverb, 50.0));
+  audio_pref(&mut app, AudioMessage::Commit);
+  let shared = app.jam.as_ref().unwrap().shared.clone().unwrap();
+  assert_eq!(shared.sv, 1);
+  assert!((shared.sound.reverb - 50.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn starting_a_jam_during_a_preset_transition_still_writes_the_new_sound() {
+  let mut app = base_app(vec![track("a"), track("b"), track("c")]);
+  app.update(Message::Ui(UiMessage::RowActivated(ListId::Favorites, 0)));
+  loaded(&mut app);
+  assert!(app.settings.sound.smooth_presets);
+  audio_pref(
+    &mut app,
+    AudioMessage::ApplyPreset("p_distortion".to_string()),
+  );
+  let target = app.ui.audio.tween.expect("transition").to;
+  let effects = jam(&mut app, JamMessage::Start);
+  assert!(saved_sounds(&effects).contains(&target));
+}
+
+#[test]
+fn the_host_releasing_a_slider_broadcasts_the_effects() {
+  let (mut app, _) = host();
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Echo, 30.0));
+  let none = guest_op(&mut app, Op::Play);
+  assert!(playbacks(&none).iter().all(|state| state.sound.sv == 0));
+  let released = audio_pref(&mut app, AudioMessage::Commit);
+  let state = playbacks(&released)[0];
+  assert_eq!(state.sound.sv, 1);
+  assert_eq!(state.sound.by, 0);
+  assert!((state.sound.sound.echo - 30.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn a_preset_in_a_jam_sends_the_effects_only_and_keeps_the_personal_volume() {
+  let (mut app, _, _) = guest(&AB, 0, 0, true, Vec::new());
+  app.settings.sound.smooth_presets = false;
+  let effects = audio_pref(
+    &mut app,
+    AudioMessage::ApplyPreset("p_distortion".to_string()),
+  );
+  let sent = commands(&effects);
+  match sent[0].1 {
+    Op::Sound { sound, preset, .. } => {
+      assert!((sound.distortion - 75.0).abs() < f32::EPSILON);
+      assert_eq!(preset.as_deref(), Some("p_distortion"));
+    }
+    other => panic!("Op::Sound attendu, reçu {other:?}"),
+  }
+  // Aperçu immédiat, sans le gain de 1,25 du préréglage.
+  assert!((app.ui.audio.live.distortion - 75.0).abs() < f32::EPSILON);
+  assert!((app.ui.audio.live.volume - 1.0).abs() < f32::EPSILON);
+  assert_eq!(app.settings.sound.active_preset, "p_default");
+}
+
+#[test]
+fn a_custom_preset_sends_no_preset_id_and_the_host_keeps_the_active_preset_out_of_the_settings() {
+  let (mut app, _) = host();
+  app.settings.sound.smooth_presets = false;
+  app
+    .settings
+    .sound
+    .custom_presets
+    .push(crate::audio_prefs::Preset {
+      id: "custom_9".to_string(),
+      name: "Mien".to_string(),
+      settings: Sound {
+        reverb: 40.0,
+        ..Sound::default()
+      },
+    });
+  let effects = audio_pref(&mut app, AudioMessage::ApplyPreset("custom_9".to_string()));
+  let state = playbacks(&effects)[0];
+  assert_eq!(state.sound.preset, None);
+  assert!((state.sound.sound.reverb - 40.0).abs() < f32::EPSILON);
+  let effects = audio_pref(&mut app, AudioMessage::ApplyPreset("p_slowed".to_string()));
+  assert_eq!(
+    playbacks(&effects)[0].sound.preset.as_deref(),
+    Some("p_slowed")
+  );
+  assert_eq!(app.active_preset(), "p_slowed");
+  assert_eq!(app.settings.sound.active_preset, "p_default");
+}
+
+#[test]
+fn resetting_the_audio_settings_in_a_jam_resets_the_shared_effects() {
+  let (mut app, _) = host();
+  guest_op(&mut app, sound_op(slowed()));
+  let effects = audio_pref(&mut app, AudioMessage::ResetAll);
+  let state = playbacks(&effects).into_iter().last().expect("état");
+  assert_eq!(state.sound.sound, JamSound::default());
+  assert_eq!(state.sound.preset.as_deref(), Some("p_default"));
+  assert_eq!(app.ui.audio.live, Sound::default());
+}
+
+#[test]
+fn a_guest_follows_the_effects_of_the_host() {
+  let (mut app, _, anchor) = guest(&AB, 0, 0, true, Vec::new());
+  let effects = event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(
+        SharedSound {
+          by: 0,
+          ..shared_of(slowed(), 1)
+        },
+        2,
+      ),
+      anchor,
+    },
+  );
+  assert!(!engine_sounds(&effects).is_empty() || app.ui.audio.tween.is_some());
+  for _ in 0..30 {
+    audio_pref(&mut app, AudioMessage::TweenTick);
+  }
+  assert!((app.ui.audio.live.speed_pitch - 0.82).abs() < f32::EPSILON);
+  assert!((app.ui.audio.live.reverb - 65.0).abs() < f32::EPSILON);
+  // Un état identique (battement) ne rejoue rien.
+  let again = event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(shared_of(slowed(), 1), 3),
+      anchor,
+    },
+  );
+  assert!(engine_sounds(&again).is_empty());
+  assert!(app.ui.audio.tween.is_none());
+  // L'hôte retire l'effet : l'invité aussi.
+  let removed = event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(shared_of(JamSound::default(), 2), 4),
+      anchor,
+    },
+  );
+  let mut shown = engine_sounds(&removed);
+  if shown.is_empty() {
+    for _ in 0..30 {
+      shown.extend(engine_sounds(&audio_pref(
+        &mut app,
+        AudioMessage::TweenTick,
+      )));
+    }
+  }
+  assert!(
+    shown
+      .last()
+      .is_some_and(|last| last.reverb.abs() < f32::EPSILON)
+  );
+  assert!(app.ui.audio.live.speed_pitch.to_bits() == 1.0_f32.to_bits());
+}
+
+#[test]
+fn a_guest_keeps_its_volume_and_equalizer_under_the_effects_of_the_host() {
+  let mut app = base_app(Vec::new());
+  app.ui.audio.live.volume = 1.4;
+  app.ui.audio.live.eq.high = 5.0;
+  let (app, effects) = guest_joined_with(
+    app,
+    SharedSound {
+      smooth: false,
+      ..shared_of(slowed(), 1)
+    },
+    0,
+    Duration::ZERO,
+    true,
+  );
+  let engine = engine_sounds(&effects);
+  assert!((engine[0].speed_pitch - 0.82).abs() < f32::EPSILON);
+  assert!((engine[0].volume - 1.4).abs() < f32::EPSILON);
+  assert!((engine[0].eq.high - 5.0).abs() < f32::EPSILON);
+  assert!((app.ui.audio.live.volume - 1.4).abs() < f32::EPSILON);
+}
+
+#[test]
+fn joining_mid_track_applies_the_effects_before_loading_and_expects_the_position_at_the_rate() {
+  let (app, effects) = guest_joined_with(
+    base_app(Vec::new()),
+    SharedSound {
+      smooth: false,
+      ..shared_of(slowed(), 1)
+    },
+    10_000,
+    Duration::from_secs(10),
+    true,
+  );
+  let sound_at = effects
+    .iter()
+    .position(|effect| matches!(effect, Effect::AudioSound(_)))
+    .expect("effets appliqués");
+  let load_at = effects
+    .iter()
+    .position(|effect| matches!(effect, Effect::ResolveTrack { .. }))
+    .expect("titre chargé");
+  assert!(sound_at < load_at);
+  let (_, _, start) = resolved(&effects).expect("resolve");
+  // 10 s de position plus 10 s écoulées à 0,82, pas 20 s.
+  assert!(start >= Duration::from_millis(18_150) && start < Duration::from_millis(18_500));
+  assert!((app.ui.audio.live.speed_pitch - 0.82).abs() < f32::EPSILON);
+}
+
+#[test]
+fn joining_mid_track_applies_a_smooth_effect_at_once_before_loading() {
+  let (app, effects) = guest_joined_with(
+    base_app(Vec::new()),
+    SharedSound {
+      smooth: true,
+      ..shared_of(slowed(), 1)
+    },
+    10_000,
+    Duration::from_secs(10),
+    true,
+  );
+  let sound_at = effects
+    .iter()
+    .position(|effect| matches!(effect, Effect::AudioSound(_)))
+    .expect("effets appliqués");
+  let load_at = effects
+    .iter()
+    .position(|effect| matches!(effect, Effect::ResolveTrack { .. }))
+    .expect("titre chargé");
+  assert!(sound_at < load_at);
+  assert!(app.ui.audio.tween.is_none());
+  assert!((app.ui.audio.live.speed_pitch - 0.82).abs() < f32::EPSILON);
+}
+
+#[test]
+fn no_correction_is_needed_for_twenty_seconds_of_playback_at_the_rate() {
+  let (mut app, _) = guest_joined_with(
+    base_app(Vec::new()),
+    SharedSound {
+      smooth: false,
+      ..shared_of(slowed(), 1)
+    },
+    0,
+    Duration::from_secs(20),
+    true,
+  );
+  loaded(&mut app);
+  // 20 s écoulées à 0,82 : le moteur est à 16,4 s.
+  let at_rate = audio(
+    &mut app,
+    AudioEvent::Position(Duration::from_millis(16_400)),
+  );
+  assert!(
+    !at_rate
+      .iter()
+      .any(|effect| matches!(effect, Effect::AudioSeek(_)))
+  );
+  // Sans effet partagé, le même écart (3,6 s) est une dérive.
+  let (mut plain, _) = guest_joined_with(
+    base_app(Vec::new()),
+    shared_of(JamSound::default(), 0),
+    0,
+    Duration::from_secs(20),
+    true,
+  );
+  loaded(&mut plain);
+  let drift = audio(
+    &mut plain,
+    AudioEvent::Position(Duration::from_millis(16_400)),
+  );
+  assert!(
+    drift
+      .iter()
+      .any(|effect| matches!(effect, Effect::AudioSeek(_)))
+  );
+}
+
+#[test]
+fn a_host_publishes_its_position_at_the_rate_of_its_engine() {
+  let (mut app, _) = host();
+  guest_op(&mut app, sound_op(slowed()));
+  audio(&mut app, AudioEvent::Position(Duration::from_secs(30)));
+  let effects = player(&mut app, PlayerMessage::TogglePlay);
+  let state = playbacks(&effects).into_iter().last().expect("état");
+  assert!(state.pos_ms >= 30_000 && state.pos_ms < 31_000);
+}
+
+#[test]
+fn a_guest_ignores_received_effects_until_its_own_command_is_acknowledged() {
+  let (mut app, _, anchor) = guest(&AB, 0, 0, true, Vec::new());
+  app.settings.sound.smooth_presets = false;
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Reverb, 40.0));
+  let released = audio_pref(&mut app, AudioMessage::Commit);
+  let id = commands(&released)[0].0;
+  // Un état de l'hôte sans acquittement : l'aperçu local reste.
+  let ignored = event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(shared_of(JamSound::default(), 1), 2),
+      anchor,
+    },
+  );
+  assert!(engine_sounds(&ignored).is_empty());
+  assert!((app.ui.audio.live.reverb - 40.0).abs() < f32::EPSILON);
+  assert_eq!(app.jam.as_ref().unwrap().sound_pending, Some(id));
+  // L'acquittement revient avec le son retenu par l'hôte (un autre invité est passé après).
+  let mut acked = SharedSound {
+    smooth: false,
+    ..shared_of(
+      JamSound {
+        echo: 20.0,
+        ..JamSound::default()
+      },
+      2,
+    )
+  };
+  acked.acknowledge(1, id);
+  let applied = event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(acked, 3),
+      anchor,
+    },
+  );
+  assert!(!engine_sounds(&applied).is_empty());
+  assert!(app.jam.as_ref().unwrap().sound_pending.is_none());
+  assert!(app.ui.audio.live.reverb.abs() < f32::EPSILON);
+  assert!((app.ui.audio.live.echo - 20.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn a_rejected_sound_command_gives_the_effects_back_to_the_host() {
+  let (mut app, _, anchor) = guest(&AB, 0, 0, true, Vec::new());
+  app.settings.sound.smooth_presets = false;
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Reverb, 40.0));
+  let released = audio_pref(&mut app, AudioMessage::Commit);
+  let id = commands(&released)[0].0;
+  event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(shared_of(JamSound::default(), 1), 2),
+      anchor,
+    },
+  );
+  assert!((app.ui.audio.live.reverb - 40.0).abs() < f32::EPSILON);
+  let effects = event(
+    &mut app,
+    JamEvent::Rejected {
+      id,
+      reason: crate::jam::protocol::RejectReason::Rate,
+    },
+  );
+  assert!(app.jam.as_ref().unwrap().sound_pending.is_none());
+  assert!(app.ui.audio.live.reverb.abs() < f32::EPSILON);
+  assert!(!engine_sounds(&effects).is_empty());
+}
+
+#[test]
+fn a_command_older_than_the_pending_one_does_not_release_it() {
+  let (mut app, _, anchor) = guest(&AB, 0, 0, true, Vec::new());
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Reverb, 40.0));
+  let first = commands(&audio_pref(&mut app, AudioMessage::Commit))[0].0;
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Reverb, 55.0));
+  let second = commands(&audio_pref(&mut app, AudioMessage::Commit))[0].0;
+  assert!(second > first);
+  let mut state = shared_of(
+    JamSound {
+      reverb: 40.0,
+      ..JamSound::default()
+    },
+    1,
+  );
+  state.acknowledge(1, first);
+  event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(state, 2),
+      anchor,
+    },
+  );
+  assert_eq!(app.jam.as_ref().unwrap().sound_pending, Some(second));
+  assert!((app.ui.audio.live.reverb - 55.0).abs() < f32::EPSILON);
+}
+
+#[test]
+fn the_personal_sound_is_kept_at_the_first_join_and_not_overwritten_by_a_reconnection() {
+  let mut app = base_app(Vec::new());
+  app.ui.audio.live.speed = 1.5;
+  app.ui.audio.live.pitch = 2.0;
+  let personal = app.ui.audio.live;
+  let (mut app, _) = guest_joined_with(
+    app,
+    SharedSound {
+      smooth: false,
+      ..shared_of(slowed(), 1)
+    },
+    0,
+    Duration::ZERO,
+    true,
+  );
+  assert_eq!(app.jam.as_ref().unwrap().personal, Some(personal));
+  assert!((app.ui.audio.live.speed_pitch - 0.82).abs() < f32::EPSILON);
+  event(&mut app, JamEvent::Reconnecting { attempt: 1 });
+  let mut playback = playback_state(&AB, 0, 5, 1, 0, true);
+  playback.sound = SharedSound {
+    smooth: false,
+    ..shared_of(slowed(), 1)
+  };
+  event(
+    &mut app,
+    JamEvent::Joined {
+      you: 1,
+      participants: participants(),
+      queue: QueueState::default(),
+      playback,
+      anchor: Instant::now(),
+    },
+  );
+  assert_eq!(app.jam.as_ref().unwrap().personal, Some(personal));
+}
+
+#[test]
+fn every_end_of_a_jam_gives_the_guest_its_own_effects_back() {
+  for cause in [EndCause::HostEnded, EndCause::Lost, EndCause::Stopped] {
+    let mut app = base_app(Vec::new());
+    app.ui.audio.live.speed = 1.5;
+    app.ui.audio.live.echo = 33.0;
+    let personal = app.ui.audio.live;
+    let (mut app, _) = guest_joined_with(
+      app,
+      SharedSound {
+        smooth: false,
+        ..shared_of(slowed(), 1)
+      },
+      0,
+      Duration::ZERO,
+      true,
+    );
+    assert_ne!(app.ui.audio.live, personal);
+    let effects = event(&mut app, JamEvent::Ended(cause.clone()));
+    assert_eq!(app.ui.audio.live, personal, "{cause:?}");
+    let engine = engine_sounds(&effects);
+    assert_eq!(
+      engine.last().map(|e| e.echo.to_bits()),
+      Some(33.0_f32.to_bits())
+    );
+    assert!(
+      saved_sounds(&effects).is_empty(),
+      "la fin du jam n'écrit rien"
+    );
+  }
+}
+
+#[test]
+fn a_task_ending_gives_the_effects_back_too() {
+  let mut app = base_app(Vec::new());
+  app.ui.audio.live.reverb = 12.0;
+  let personal = app.ui.audio.live;
+  let (mut app, _) = guest_joined_with(
+    app,
+    SharedSound {
+      smooth: false,
+      ..shared_of(slowed(), 1)
+    },
+    0,
+    Duration::ZERO,
+    true,
+  );
+  jam(&mut app, JamMessage::TaskEnded(1, EndCause::Lost));
+  assert!(app.jam.is_none());
+  assert_eq!(app.ui.audio.live, personal);
+}
+
+#[test]
+fn the_host_gets_its_own_effects_back_when_the_jam_ends_or_when_it_is_left_alone() {
+  for cause in [EndCause::Stopped, EndCause::Alone] {
+    let (mut app, _) = host_with_sound(|app| {
+      app.ui.audio.live.speed = 1.2;
+    });
+    app.settings.sound.smooth_presets = false;
+    let before = app.ui.audio.live;
+    guest_op(&mut app, sound_op(slowed()));
+    assert_ne!(app.ui.audio.live, before);
+    let effects = event(&mut app, JamEvent::Ended(cause.clone()));
+    assert_eq!(app.ui.audio.live, before, "{cause:?}");
+    assert_eq!(
+      engine_sounds(&effects).last().map(|e| e.speed.to_bits()),
+      Some(1.2_f32.to_bits())
+    );
+  }
+}
+
+#[test]
+fn a_volume_set_during_a_jam_survives_the_end_of_the_jam() {
+  let (mut app, _, _) = guest(&AB, 0, 0, true, Vec::new());
+  audio_pref(&mut app, AudioMessage::Set(SoundField::Volume, 1.5));
+  let saved = audio_pref(&mut app, AudioMessage::Commit);
+  assert!(
+    saved_sounds(&saved)
+      .iter()
+      .all(|sound| (sound.volume - 1.5).abs() < f32::EPSILON)
+  );
+  event(&mut app, JamEvent::Ended(EndCause::HostEnded));
+  assert!((app.ui.audio.live.volume - 1.5).abs() < f32::EPSILON);
+}
+
+#[test]
+fn no_audio_message_writes_the_effects_of_the_jam_to_the_settings() {
+  let cases: Vec<(&str, AudioMessage)> = vec![
+    ("Commit", AudioMessage::Commit),
+    (
+      "ApplyPreset",
+      AudioMessage::ApplyPreset("p_distortion".to_string()),
+    ),
+    ("ResetBands", AudioMessage::ResetBands),
+    ("ResetAll", AudioMessage::ResetAll),
+    ("ToggleHq", AudioMessage::ToggleHq(true)),
+    ("HqEngine", AudioMessage::HqEngine("glyphs-7B".to_string())),
+    ("TogglePersist", AudioMessage::TogglePersist(true)),
+    ("ToggleSmooth", AudioMessage::ToggleSmooth(false)),
+    ("Device", AudioMessage::Device(Some("sortie".to_string()))),
+    (
+      "DeletePreset",
+      AudioMessage::DeletePreset("custom_9".to_string()),
+    ),
+    ("PresetSave", AudioMessage::PresetSave),
+  ];
+  for (name, message) in cases {
+    let mut app = base_app(Vec::new());
+    app.settings.sound.smooth_presets = false;
+    let (mut app, _) = guest_joined_with(
+      app,
+      SharedSound {
+        smooth: false,
+        ..shared_of(slowed(), 1)
+      },
+      0,
+      Duration::ZERO,
+      true,
+    );
+    assert!((app.ui.audio.live.reverb - 65.0).abs() < f32::EPSILON);
+    if name == "PresetSave" {
+      audio_pref(&mut app, AudioMessage::NewPreset);
+      audio_pref(&mut app, AudioMessage::PresetName("Nom".to_string()));
+    }
+    let effects = audio_pref(&mut app, message);
+    let written = saved_sounds(&effects);
+    for sound in &written {
+      assert!(
+        sound.reverb.abs() < f32::EPSILON
+          && sound.echo.abs() < f32::EPSILON
+          && (sound.speed_pitch - 1.0).abs() < f32::EPSILON,
+        "{name} écrit les effets du jam : {sound:?}"
+      );
+    }
+    assert!(
+      app.settings.sound.audio.reverb.abs() < f32::EPSILON,
+      "{name} laisse les effets du jam dans les réglages"
+    );
+    assert_eq!(app.settings.sound.active_preset, "p_default", "{name}");
+  }
+}
+
+#[test]
+fn the_end_of_a_transition_in_a_jam_writes_the_personal_sound() {
+  let (mut app, _, _) = guest(&AB, 0, 0, true, Vec::new());
+  audio_pref(&mut app, AudioMessage::ApplyPreset("p_slowed".to_string()));
+  assert!(app.ui.audio.tween.is_some());
+  let mut written = Vec::new();
+  for _ in 0..40 {
+    written.extend(saved_sounds(&audio_pref(&mut app, AudioMessage::TweenTick)));
+  }
+  assert!(app.ui.audio.tween.is_none());
+  assert!((app.ui.audio.live.reverb - 65.0).abs() < f32::EPSILON);
+  assert_eq!(written.len(), 1);
+  assert!(written[0].reverb.abs() < f32::EPSILON);
+}
+
+#[test]
+fn a_new_preset_saved_in_a_jam_does_not_become_the_active_preset_of_the_settings() {
+  let (mut app, _) = host();
+  guest_op(&mut app, sound_op(slowed()));
+  audio_pref(&mut app, AudioMessage::NewPreset);
+  audio_pref(&mut app, AudioMessage::PresetName("Capté".to_string()));
+  audio_pref(&mut app, AudioMessage::PresetSave);
+  assert_eq!(app.settings.sound.custom_presets.len(), 1);
+  assert_eq!(app.settings.sound.active_preset, "p_default");
+}
+
+#[test]
+fn the_effects_of_the_jam_come_from_the_host_in_the_active_preset_of_a_guest() {
+  let (mut app, _, anchor) = guest(&AB, 0, 0, true, Vec::new());
+  assert_eq!(app.active_preset(), "");
+  let mut shared = shared_of(slowed(), 1);
+  shared.preset = Some("p_slowed".to_string());
+  shared.by = 0;
+  event(
+    &mut app,
+    JamEvent::Playback {
+      state: sound_state(shared, 2),
+      anchor,
+    },
+  );
+  assert_eq!(app.active_preset(), "p_slowed");
+  assert_eq!(app.settings.sound.active_preset, "p_default");
+}
+
+#[test]
 fn operations_are_blocked_while_reconnecting() {
   let (mut app, _, _) = guest(&AB, 0, 0, true, Vec::new());
   event(&mut app, JamEvent::Reconnecting { attempt: 1 });
@@ -630,6 +1598,122 @@ fn a_refused_join_ends_with_a_toast_and_no_state() {
   let effects = event(&mut app, JamEvent::Ended(EndCause::Refused(Refusal::Room)));
   assert!(app.jam.is_none());
   assert!(has_toast(&effects, "Wrong or expired invite code"));
+}
+
+#[test]
+fn a_code_not_found_ends_with_a_toast_and_no_state() {
+  let mut app = base_app(Vec::new());
+  jam(&mut app, JamMessage::CodeInput("k7q-m2x".to_string()));
+  jam(&mut app, JamMessage::Join);
+  let effects = jam(&mut app, JamMessage::TaskEnded(1, EndCause::CodeNotFound));
+  assert!(app.jam.is_none());
+  assert!(has_toast(&effects, "Code not found or the Jam ended"));
+}
+
+#[test]
+fn the_code_field_is_uppercased_while_typing_and_formatted_when_pasted() {
+  let mut app = base_app(Vec::new());
+  jam(&mut app, JamMessage::CodeInput("k7q-m".to_string()));
+  assert_eq!(app.ui.jam_panel.code, "K7Q-M");
+  jam(
+    &mut app,
+    JamMessage::Pasted(Some("  k7q m2x \n".to_string())),
+  );
+  assert_eq!(app.ui.jam_panel.code, "K7Q-M2X");
+  jam(&mut app, JamMessage::Pasted(Some("k7qm2x".to_string())));
+  assert_eq!(app.ui.jam_panel.code, "K7Q-M2X");
+  jam(
+    &mut app,
+    JamMessage::Pasted(Some(" not a code \n".to_string())),
+  );
+  assert_eq!(app.ui.jam_panel.code, "NOT A CODE");
+  jam(&mut app, JamMessage::Pasted(None));
+  assert_eq!(app.ui.jam_panel.code, "NOT A CODE");
+}
+
+#[test]
+fn an_old_long_ticket_is_kept_as_typed_or_pasted() {
+  let mut app = base_app(Vec::new());
+  let ticket = "riffjamabcdefghijklmnop234567";
+  jam(&mut app, JamMessage::CodeInput(ticket.to_string()));
+  assert_eq!(app.ui.jam_panel.code, ticket);
+  jam(&mut app, JamMessage::Pasted(Some(format!(" {ticket}\n"))));
+  assert_eq!(app.ui.jam_panel.code, ticket);
+}
+
+#[test]
+fn joining_sends_the_code_and_the_rendezvous_setting() {
+  let mut app = base_app(Vec::new());
+  jam(&mut app, JamMessage::Pasted(Some("k7q-m2x".to_string())));
+  let effects = jam(&mut app, JamMessage::Join);
+  assert!(effects.iter().any(|effect| matches!(
+    effect,
+    Effect::JamJoin { ticket, rendezvous: None, .. } if ticket == "K7Q-M2X"
+  )));
+  let mut app = base_app(Vec::new());
+  app.settings.jam_rendezvous = "  https://pkarr.example/pkarr  ".to_string();
+  jam(&mut app, JamMessage::CodeInput("K7QM2X".to_string()));
+  let effects = jam(&mut app, JamMessage::Join);
+  assert!(effects.iter().any(|effect| matches!(
+    effect,
+    Effect::JamJoin { rendezvous: Some(url), .. } if url == "https://pkarr.example/pkarr"
+  )));
+}
+
+#[test]
+fn hosting_sends_the_rendezvous_setting_only_when_it_is_set() {
+  for (setting, expected) in [
+    ("", None),
+    ("  ", None),
+    (" https://pkarr.example/ ", Some("https://pkarr.example/")),
+  ] {
+    let mut app = base_app(vec![track("a")]);
+    app.settings.jam_rendezvous = setting.to_string();
+    let effects = jam(&mut app, JamMessage::Start);
+    assert!(
+      effects.iter().any(|effect| matches!(
+        effect,
+        Effect::JamHost { rendezvous, .. } if rendezvous.as_deref() == expected
+      )),
+      "{setting:?}"
+    );
+  }
+}
+
+#[test]
+fn a_code_taken_over_replaces_the_shown_code_and_warns_the_host() {
+  let (mut app, _) = host();
+  assert_eq!(
+    app.jam.as_ref().unwrap().ticket.as_deref(),
+    Some("riffjam-test")
+  );
+  let effects = event(
+    &mut app,
+    JamEvent::CodeChanged {
+      ticket: "ABC-DEF".to_string(),
+    },
+  );
+  assert!(has_toast(&effects, "Jam code compromised"));
+  assert_eq!(app.jam.as_ref().unwrap().ticket.as_deref(), Some("ABC-DEF"));
+  let copied = jam(&mut app, JamMessage::CopyCode);
+  assert!(
+    copied
+      .iter()
+      .any(|effect| matches!(effect, Effect::CopyText(text) if text == "ABC-DEF"))
+  );
+}
+
+#[test]
+fn a_guest_ignores_a_code_change_it_cannot_receive() {
+  let (mut app, _, _) = guest(&AB, 0, 0, true, Vec::new());
+  let effects = event(
+    &mut app,
+    JamEvent::CodeChanged {
+      ticket: "ABC-DEF".to_string(),
+    },
+  );
+  assert!(effects.is_empty());
+  assert_eq!(app.jam.as_ref().unwrap().ticket, None);
 }
 
 #[test]
@@ -836,6 +1920,81 @@ fn leaving_the_jam_paused_on_a_blocked_track_does_nothing() {
   assert!(!app.playback.is_playing);
   event(&mut app, JamEvent::Ended(EndCause::Stopped));
   assert_eq!(current_id(&app), "b");
+}
+
+#[test]
+fn a_blocked_track_played_in_a_jam_is_neither_in_the_history_nor_scrobbled() {
+  let (mut app, _) = host();
+  app.ui.manage.lastfm.connected = true;
+  app.data.toggle_block_track(&track("b"));
+  let from = uid_of(&app, "a");
+  guest_op(&mut app, Op::Next { from: Some(from) });
+  assert_eq!(current_id(&app), "b");
+  assert!(
+    !app
+      .data
+      .history
+      .iter()
+      .any(|played| played.id.as_deref() == Some("b"))
+  );
+  assert!(app.lastfm_tick(5.0, 100.0).is_empty());
+  app.data.toggle_block_track(&track("b"));
+  assert!(
+    !app.lastfm_tick(6.0, 100.0).is_empty(),
+    "titre sain : scrobblé"
+  );
+}
+
+#[test]
+fn blocking_the_artist_of_the_current_track_in_a_jam_does_not_skip() {
+  let (mut app, _) = host();
+  app.update(Message::Ui(UiMessage::CurrentCommand(
+    TrackCommand::BlockArtist,
+  )));
+  assert!(app.data.is_artist_blocked("Artiste a"));
+  assert_eq!(current_id(&app), "a");
+}
+
+#[test]
+fn importing_an_account_is_not_available_during_a_jam() {
+  let (mut app, _) = host();
+  let effects = app.update(Message::Manage(ManageMessage::ImportAccount));
+  assert!(!effects.contains(&Effect::PickAccount));
+  assert!(has_toast(&effects, "Not available during a Jam"));
+  let favorites = app.data.favorites.len();
+  let effects = app.update(Message::Manage(ManageMessage::AccountRead(Ok(Some(
+    serde_json::json!({ "localStorage": {}, "riff_main_always_on_top": "true" }),
+  )))));
+  assert!(has_toast(&effects, "Not available during a Jam"));
+  assert_eq!(app.data.favorites.len(), favorites);
+  assert!(app.jam.is_some());
+}
+
+#[test]
+fn the_host_gets_back_the_shuffle_and_the_repeat_of_the_settings_at_the_end_of_the_jam() {
+  let (mut app, _) = host();
+  player(&mut app, PlayerMessage::ToggleShuffle);
+  player(&mut app, PlayerMessage::ToggleRepeat);
+  assert!(app.player.shuffle && app.player.repeat);
+  assert!(!app.data.shuffle && !app.data.repeat);
+  event(&mut app, JamEvent::Ended(EndCause::Stopped));
+  assert!(!app.player.shuffle && !app.player.repeat);
+}
+
+#[test]
+fn the_host_gets_back_the_shuffle_of_the_playing_list_at_the_end_of_the_jam() {
+  let mut app = base_app(vec![track("a"), track("b"), track("c")]);
+  app
+    .data
+    .toggle_shuffle_scope(crate::library::FAVORITES_SCOPE);
+  app.update(Message::Ui(UiMessage::RowActivated(ListId::Favorites, 0)));
+  loaded(&mut app);
+  jam(&mut app, JamMessage::Start);
+  event(&mut app, JamEvent::Participants(participants()));
+  player(&mut app, PlayerMessage::ToggleShuffle);
+  assert!(!app.player.shuffle);
+  event(&mut app, JamEvent::Ended(EndCause::Stopped));
+  assert!(app.player.shuffle);
 }
 
 #[test]
