@@ -719,6 +719,28 @@ pub const UI_KEYS: &[&str] = &[
   "Jam relay URL",
   "Leave empty to use the default encrypted relays",
   "Invalid relay URL, using the default relays",
+  "Sync Windows wallpaper",
+  "Syncs the Windows desktop wallpaper with the album art of the song playing",
+  "Monitors",
+  "Primary monitor only",
+  "One render per monitor (span)",
+  "Blur reference width",
+  "Album colour mix",
+  "Glow size",
+  "Dithering",
+  "Gradient resolution",
+  "Full resolution",
+  "Frame rate",
+  "Easing",
+  "Centred on the change",
+  "Ends on the change",
+  "Starts on the change",
+  "Skip when the desktop is hidden",
+  "Pre-render the next song",
+  "Pre-render as soon as the next song is known",
+  "Cache renders on disk",
+  "Force the Windows wallpaper style",
+  "Restore the previous wallpaper when disabled",
 ];
 
 const ENGLISH: &str = "en";
@@ -1028,5 +1050,51 @@ mod tests {
       assert_eq!(english.t(key), *key);
     }
     assert_eq!(fr.t("Copy"), "Copier");
+  }
+
+  #[test]
+  fn wallpaper_sync_labels_are_translated() {
+    let keys = [
+      "Sync Windows wallpaper",
+      "Syncs the Windows desktop wallpaper with the album art of the song playing",
+      "Monitors",
+      "Primary monitor only",
+      "One render per monitor (span)",
+      "Blur reference width",
+      "Album colour mix",
+      "Brightness",
+      "Glow size",
+      "Dithering",
+      "Off",
+      "Gradient resolution",
+      "Full resolution",
+      "Crossfade",
+      "Duration",
+      "Frame rate",
+      "Easing",
+      "Smooth",
+      "Linear",
+      "Alignment",
+      "Centred on the change",
+      "Ends on the change",
+      "Starts on the change",
+      "Skip when the desktop is hidden",
+      "Pre-render the next song",
+      "Pre-render as soon as the next song is known",
+      "Cache renders on disk",
+      "Force the Windows wallpaper style",
+      "Restore the previous wallpaper when disabled",
+      "Reset",
+    ];
+    for lang in ["fr", "ru", "uk"] {
+      let i18n = I18n::load(lang, &empty_cache());
+      for key in keys {
+        assert!(UI_KEYS.contains(&key), "{key} absent de UI_KEYS");
+        assert!(
+          i18n.translated(key).is_some(),
+          "{key} non traduit en {lang}"
+        );
+      }
+    }
   }
 }

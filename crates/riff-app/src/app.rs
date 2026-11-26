@@ -2385,6 +2385,7 @@ impl Program {
 
   /// Pousse l'état au système (session média, Discord, paroles) et charge la pochette d'un nouveau titre.
   fn sync_system(&mut self) -> Task<Message> {
+    self.system.sync_wallpaper(&self.app, &self.backend);
     let Some(url) = self.system.sync(&self.app) else {
       return Task::none();
     };
@@ -2769,6 +2770,10 @@ impl Program {
         self.main_window,
         mini_level(main_on_top(self.app.settings.main_always_on_top, false)),
       )),
+      Effect::SaveWindowAndExit(..) => {
+        self.system.request_stop_wallpaper();
+        run(effect, &self.backend)
+      }
       other => run(other, &self.backend),
     }
   }
