@@ -386,6 +386,8 @@
  "Jam relay URL": "URL ретранслятора джема",
  "Leave empty to use the default encrypted relays": "Оставьте пустым, чтобы использовать зашифрованные ретрансляторы по умолчанию",
  "Invalid relay URL, using the default relays": "Недопустимый URL ретранслятора, используются ретрансляторы по умолчанию",
+ "Muffled": "Приглушение",
+ "Party bathroom": "Ванная на вечеринке",
  "Sync Windows wallpaper": "Синхронизация обоев Windows",
  "Syncs the Windows desktop wallpaper with the album art of the song playing": "Синхронизирует обои рабочего стола Windows с обложкой текущего трека",
  "Monitors": "Мониторы",

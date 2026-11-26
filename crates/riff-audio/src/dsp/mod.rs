@@ -5,6 +5,7 @@ pub mod dynamics;
 pub mod echo;
 pub mod eq;
 pub mod hq;
+pub mod muffled;
 pub mod reverb;
 pub mod waveshaper;
 
@@ -16,6 +17,7 @@ use dynamics::{Compressor, CompressorParams};
 use echo::Echo;
 use eq::Equalizer;
 use hq::{HqChain, HqSettings};
+use muffled::Muffled;
 use reverb::Reverb;
 use waveshaper::{Oversample, WaveShaper, distortion_curve};
 
@@ -114,6 +116,7 @@ pub struct Chain {
   echo: Echo,
   reverb: Reverb,
   distortion: WaveShaper,
+  muffled: Muffled,
   hq: HqChain,
   limiter: Compressor,
   hq_enabled: bool,
@@ -158,6 +161,7 @@ impl Chain {
       echo: Echo::new(fs),
       reverb: Reverb::new(fs),
       distortion: WaveShaper::new(distortion_curve(0.0), Oversample::None),
+      muffled: Muffled::new(fs),
       hq: HqChain::new(fs, config.hq_oversample, HqSettings::default()),
       limiter: Compressor::new(fs as f32, NORM_LIMITER),
       hq_enabled: false,
@@ -188,6 +192,7 @@ impl Chain {
   /// Amène tous les réglages à leur cible sans lissage (rendu hors ligne).
   pub fn settle(&mut self) {
     self.eq.settle();
+    self.muffled.settle();
     for ramp in [
       &mut self.dry,
       &mut self.distortion_gain,
@@ -228,6 +233,7 @@ impl Chain {
     } else {
       1.0
     };
+    self.muffled.set_amount(settings.muffled);
     self.apply_master_target();
   }
 
@@ -300,10 +306,11 @@ impl Chain {
     self.pause.current = 1.0;
   }
 
-  /// `flushEffects` : vide l'écho et la réverbération.
+  /// `flushEffects` : vide l'écho, la réverbération et l'acoustique mural/carrelée.
   pub fn flush_effects(&mut self) {
     self.echo.reset();
     self.reverb.reset();
+    self.muffled.reset();
   }
 
   pub fn process(&mut self, left: &mut [f32], right: &mut [f32]) {
@@ -325,6 +332,7 @@ impl Chain {
       }
     });
     self.mix_effects(left, right);
+    self.muffled.process_quantum(left, right);
     self.step_master(frames, left, right);
     if self.output_stage {
       let coefficient = if frames == QUANTUM {
@@ -705,5 +713,32 @@ mod tests {
     c.end_pause_fade();
     let input = sine(1000.0, 0.01, 4800);
     assert_eq!(run(&mut c, &input), input);
+  }
+
+  #[test]
+  fn muffled_attenuates_highs_and_respects_block_size() {
+    let settings = AudioSettings {
+      muffled: 85.0,
+      ..AudioSettings::default()
+    };
+    let input = sine(4000.0, 0.3, 9600);
+    let mut reference = chain(false);
+    reference.set_settings(&settings);
+    reference.settle();
+    let want = run(&mut reference, &input);
+    assert!(
+      peak(&want[4800..]) < 0.03,
+      "high freq not muffled: {}",
+      peak(&want[4800..])
+    );
+
+    let mut chunked = chain(false);
+    chunked.set_settings(&settings);
+    chunked.settle();
+    let (mut l, mut r) = (input.clone(), input);
+    for (cl, cr) in l.chunks_mut(128).zip(r.chunks_mut(128)) {
+      chunked.process(cl, cr);
+    }
+    assert_eq!(l, want);
   }
 }

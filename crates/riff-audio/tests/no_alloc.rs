@@ -75,6 +75,7 @@ fn all_on() -> AudioSettings {
     reverb: 60.0,
     echo: 30.0,
     distortion: 50.0,
+    muffled: 70.0,
     eq: EqGains {
       low: 2.0,
       mid: -1.0,
@@ -143,6 +144,7 @@ fn changing_settings_in_the_callback_does_not_allocate() {
     for step in 0..32 {
       let mut changed = settings;
       changed.distortion = step as f32;
+      changed.muffled = step as f32 * 3.0;
       chain.set_settings(&changed);
       chain.set_hq(step % 2 == 0, &hq);
       chain.set_volume(0.5, false);
