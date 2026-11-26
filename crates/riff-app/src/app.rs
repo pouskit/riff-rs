@@ -1643,6 +1643,9 @@ impl App {
     if let Some(history) = crate::screens::search_history::view(self) {
       layers = layers.push(history);
     }
+    // iced apparie les enfants d'une `Stack` par index : les calques conditionnels du dessous (minuteur lancé par un survol,
+    // visualiseur, fonds) décaleraient la fenêtre des réglages et recréeraient son état (défilement, survol, appui en cours).
+    let mut layers = Stack::new().width(Fill).height(Fill).push(layers);
     if self.screen == Screen::Settings || self.overlay_motion.settings_leaving(self.now) {
       layers = layers.push(crate::screens::settings::modal(self));
     }
@@ -5641,5 +5644,76 @@ mod tests {
         Size::new(640.0, 400.0)
       )]
     );
+  }
+
+  /// Décalage vertical de chaque liste défilante de la vue, dans l'ordre de l'arbre.
+  struct ScrollOffsets(Vec<f32>);
+
+  impl iced::advanced::widget::Operation for ScrollOffsets {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation)) {
+      operate(self);
+    }
+
+    fn scrollable(
+      &mut self,
+      _id: Option<&iced::advanced::widget::Id>,
+      _bounds: iced::Rectangle,
+      _content_bounds: iced::Rectangle,
+      translation: iced::Vector,
+      _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+      self.0.push(translation.y);
+    }
+  }
+
+  /// Bug des réglages : le minuteur d'animation (`ticker`) entrait dans la pile racine avant la fenêtre des réglages. Un survol
+  /// lance une transition, le minuteur apparaît, la fenêtre change d'index et iced recrée tout son état (défilement, survol, appui).
+  #[test]
+  fn the_settings_window_keeps_its_scroll_when_the_animation_ticker_toggles() {
+    use iced::advanced::renderer::Headless;
+    use iced_test::runtime::user_interface::{Cache, UserInterface};
+    let mut app = app();
+    app.screen = Screen::Settings;
+    app.splash = None;
+    app.visuals.warmup_frames = 0;
+    assert!(!app.main_ticker(), "aucune animation au départ");
+    let mut renderer = iced_test::futures::futures::executor::block_on(iced::Renderer::new(
+      iced::Font::DEFAULT,
+      iced::Pixels(16.0),
+      None,
+    ))
+    .expect("moteur de rendu de test");
+    // Dans le volet de droite de la fenêtre centrée, à droite de la navigation.
+    let cursor = iced::mouse::Cursor::Available(Point::new(
+      DEFAULT_WINDOW.width / 2.0 + 150.0,
+      DEFAULT_WINDOW.height / 2.0,
+    ));
+    let offsets = |ui: &mut UserInterface<'_, Message, Theme, iced::Renderer>,
+                   renderer: &iced::Renderer| {
+      let mut operation = ScrollOffsets(Vec::new());
+      ui.operate(renderer, &mut operation);
+      operation.0
+    };
+    let mut ui = UserInterface::build(app.view(), DEFAULT_WINDOW, Cache::default(), &mut renderer);
+    let wheel = iced::Event::Mouse(iced::mouse::Event::WheelScrolled {
+      delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y: -300.0 },
+    });
+    let _ = ui.update(
+      &[wheel],
+      cursor,
+      &mut renderer,
+      &mut iced::advanced::clipboard::Null,
+      &mut Vec::new(),
+    );
+    let scrolled = offsets(&mut ui, &renderer);
+    assert!(
+      scrolled.iter().any(|y| *y != 0.0),
+      "le volet a défilé : {scrolled:?}"
+    );
+    let cache = ui.into_cache();
+    app.visuals.warmup_frames = 1;
+    assert!(app.main_ticker(), "une animation tourne");
+    let mut ui = UserInterface::build(app.view(), DEFAULT_WINDOW, cache, &mut renderer);
+    assert_eq!(offsets(&mut ui, &renderer), scrolled);
   }
 }

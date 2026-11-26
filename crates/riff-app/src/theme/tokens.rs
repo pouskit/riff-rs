@@ -351,6 +351,10 @@ pub mod home {
   /// `.sp-card-cover` : `border-radius: 14px`, relevée de 2 px au survol (`translateY(-2px)`).
   pub const COVER_RADIUS: f32 = css(14.0);
   pub const COVER_LIFT: f32 = css(2.0);
+  /// Bouton « Play » d'une carte de mix, au survol : cercle de 44 px à 8 px du coin bas droit de la pochette.
+  pub const CARD_PLAY: f32 = css(44.0);
+  pub const CARD_PLAY_ICON: f32 = 20.0;
+  pub const CARD_PLAY_MARGIN: f32 = css(8.0);
   /// `.sp-grid-cover` : `gap: 2px; padding: 2px`, images à `border-radius: 4px` (`styles.css:9470`).
   pub const GRID_GAP: f32 = css(2.0);
   pub const GRID_RADIUS: f32 = css(4.0);

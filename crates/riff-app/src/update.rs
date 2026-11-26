@@ -2810,6 +2810,7 @@ Platform: {}
         effects
       }
       UiMessage::OpenMix(index) => self.open_mix(index),
+      UiMessage::PlayMix(index) => self.play_mix(index),
       UiMessage::RateMix(like) => self.rate_mix(like),
       UiMessage::MixReady {
         day,
@@ -3490,6 +3491,33 @@ Platform: {}
     };
     let grid = if grid.len() >= 4 { grid } else { Vec::new() };
     self.open_album(album, Some(mix.tracks), grid)
+  }
+
+  /// Lecture d'un mix depuis sa carte. Portée `mix:<id>` : jamais dans `shuffle_lists` (la bascule de la barre de lecture
+  /// ne mémorise que les portées connues), donc la file suit l'ordre du mix sans toucher l'aléatoire global.
+  fn play_mix(&mut self, index: usize) -> Vec<Effect> {
+    let Some(mix) = self
+      .data
+      .daily_mixes
+      .as_ref()
+      .and_then(|mixes| mixes.mixes.get(index))
+    else {
+      return Vec::new();
+    };
+    let scope = format!(
+      "mix:{}",
+      mix
+        .id
+        .clone()
+        .unwrap_or_else(|| format!("daily-mix-{}", index + 1))
+    );
+    let tracks = mix
+      .tracks
+      .iter()
+      .filter(|track| !self.data.is_blocked(track))
+      .cloned()
+      .collect();
+    self.play_all(tracks, scope)
   }
 
   fn rate_mix(&mut self, like: bool) -> Vec<Effect> {

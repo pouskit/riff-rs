@@ -2312,6 +2312,30 @@ fn opening_a_cached_daily_mix_hides_the_tracks_blocked_since() {
 }
 
 #[test]
+fn the_play_button_of_a_daily_mix_plays_it_in_order_even_with_shuffle_on() {
+  let mut app = app();
+  app.data.shuffle = true;
+  app.data.daily_mixes = Some(DailyMixes {
+    day: Some("2026-11-03".into()),
+    mixes: vec![DailyMix {
+      id: Some("daily-mix-1".into()),
+      tracks: tracks(&["1", "2", "3", "4"]),
+      ..DailyMix::default()
+    }],
+  });
+  app.data.toggle_block_track(&track("2"));
+  let screen = app.screen;
+  ui(&mut app, UiMessage::PlayMix(0));
+  assert_eq!(ids(&app.player.queue), ["1", "3", "4"]);
+  assert_eq!(app.player.index, Some(0));
+  assert!(!app.player.shuffle, "file dans l'ordre du mix");
+  assert!(!app.player.radio);
+  assert!(app.data.shuffle, "l'aléatoire global ne change pas");
+  assert_eq!(app.screen, screen, "la page reste l'accueil");
+  assert!(ui(&mut app, UiMessage::PlayMix(5)).is_empty());
+}
+
+#[test]
 fn opening_an_album_loads_its_tracks_and_a_late_answer_is_ignored() {
   let mut app = app();
   let album = SavedAlbum {

@@ -554,6 +554,8 @@ struct Card {
   explicit: bool,
   /// Sans message, la carte est une attente (`Daily Mix n` pendant la génération).
   message: Option<Message>,
+  /// Bouton « Play » posé sur la pochette, montré au survol seulement.
+  play: Option<Message>,
 }
 
 /// `.explicit-badge` : carré de 14 px, « E » de 9 px (`styles.css:9434`).
@@ -591,9 +593,23 @@ fn card<'a>(app: &App, roles: Roles, spec: Card) -> Element<'a, Message> {
     .lift
     .value(key, app.now, f32::from(u8::from(hovered)));
   let lift = metrics::COVER_LIFT * (1.0 - raised);
+  let cover = card_cover(app, roles, &spec.cover);
+  // Bouton seulement sous le pointeur : sans animation, rien ne s'ajoute aux images des cartes au repos. Seule la pochette
+  // change de forme, elle n'a pas d'état ; la carte, son bouton et sa zone de survol gardent le leur.
+  let cover = match spec.play.filter(|_| hovered) {
+    Some(play) => stack![
+      cover,
+      container(play_button(app, roles, play))
+        .padding(metrics::CARD_PLAY_MARGIN)
+        .align_right(Fill)
+        .align_bottom(Fill)
+    ]
+    .into(),
+    None => cover,
+  };
   let mut body = column![
     space().height(lift),
-    card_cover(app, roles, &spec.cover),
+    cover,
     space().height(metrics::TITLE_MARGIN + metrics::COVER_LIFT - lift),
     faded(
       line(
@@ -634,6 +650,31 @@ fn card<'a>(app: &App, roles: Roles, spec: Card) -> Element<'a, Message> {
   .on_enter(ui(UiMessage::HomeHover(row_id, index, true)))
   .on_exit(ui(UiMessage::HomeHover(row_id, index, false)))
   .into()
+}
+
+/// Bouton rond « Play » d'une carte : `primary`, calque `on-primary` de 8 % au survol et 12 % à l'appui, sans transition.
+fn play_button<'a>(app: &App, roles: Roles, message: Message) -> Element<'a, Message> {
+  let side = metrics::CARD_PLAY;
+  let widget =
+    button(container(icons::glyph_px(icons::PL_PLAY, metrics::CARD_PLAY_ICON)).center(Fill))
+      .padding(0)
+      .width(side)
+      .height(side)
+      .style(move |_, status| {
+        let fill = match status {
+          button::Status::Hovered => overlay(roles.primary, roles.on_primary, 0.08),
+          button::Status::Pressed => overlay(roles.primary, roles.on_primary, 0.12),
+          _ => roles.primary,
+        };
+        button::Style {
+          background: Some(Background::Color(fill)),
+          text_color: roles.on_primary,
+          border: border::rounded(side / 2.0),
+          ..button::Style::default()
+        }
+      })
+      .on_press(message);
+  tip(widget.into(), app.i18n.t("Play"))
 }
 
 /// Colonnes d'une rangée : largeur d'une carte, écart et hauteur de la rangée.
@@ -941,6 +982,7 @@ fn made_section<'a>(app: &'a App, roles: Roles) -> Option<Element<'a, Message>> 
           sub: "Based on your taste".to_string(),
           explicit: false,
           message: Some(Message::Player(PlayerMessage::PlayMyWave)),
+          play: None,
         }
       } else if let Some(mix) = mixes.get(index - 1) {
         Card {
@@ -954,6 +996,7 @@ fn made_section<'a>(app: &'a App, roles: Roles) -> Option<Element<'a, Message>> 
           sub: mix.artists.join(", "),
           explicit: false,
           message: Some(ui(UiMessage::OpenMix(index - 1))),
+          play: Some(ui(UiMessage::PlayMix(index - 1))),
         }
       } else {
         Card {
@@ -964,6 +1007,7 @@ fn made_section<'a>(app: &'a App, roles: Roles) -> Option<Element<'a, Message>> 
           sub: String::new(),
           explicit: false,
           message: None,
+          play: None,
         }
       };
       card(app, roles, spec)
@@ -1225,6 +1269,7 @@ fn trending_section<'a>(app: &'a App, roles: Roles) -> Option<Element<'a, Messag
             sub: track.artist_text(),
             explicit: show_explicit && track.is_explicit(),
             message: Some(ui(UiMessage::RowActivated(ListId::Trending, index))),
+            play: None,
           },
         )
       },

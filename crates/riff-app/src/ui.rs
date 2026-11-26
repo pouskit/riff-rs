@@ -447,6 +447,8 @@ pub enum UiMessage {
   SpotifyPromoOpen,
   SpotifyPromoClose,
   OpenMix(usize),
+  /// Bouton « Play » d'une carte de mix de l'accueil : lecture dans l'ordre, sans ouvrir la page.
+  PlayMix(usize),
   RateMix(bool),
   MixReady {
     day: String,
