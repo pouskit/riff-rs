@@ -5,6 +5,7 @@ use crate::manage::ImportKind;
 use crate::prefs_visual::{VisualBool, VisualChoice, VisualInt};
 use crate::screens::Screen;
 use crate::settings::{DEFAULT_HOME_ORDER, DiscordStatus, DiscordTime, ThemeMode, UI_SCALE_RANGE};
+use crate::system::wallpaper::{OutputMode, TransitionAnchor, TransitionEasing};
 use crate::theme::{ActiveTheme, ThemeSource};
 use crate::update::DEFAULT_SIDEBAR_ORDER;
 use material_colors::color::Rgb;
@@ -126,6 +127,7 @@ pub enum BoolKey {
   DiscordPaused,
   DiscordAlbum,
   UpdateCheck,
+  WallpaperSync,
 }
 
 /// Réglages numériques, avec leurs bornes.
@@ -428,6 +430,12 @@ pub const ENTRIES: &[Entry] = &[
     "Theme mode",
     "",
     Control::Segmented(TextKey::ThemeMode, THEME_MODES),
+  ),
+  entry(
+    Category::Theme,
+    "Sync Windows wallpaper",
+    "Syncs the Windows desktop wallpaper with the album art of the song playing",
+    Control::Toggle(BoolKey::WallpaperSync),
   ),
   entry(
     Category::Theme,
@@ -1072,10 +1080,36 @@ pub struct SettingsUi {
   pub mesh_open: bool,
   /// Instant d'ouverture du panneau : `.mesh-preview-bg` n'existe à l'écran qu'avec la fenêtre, son `meshFloat` repart de zéro.
   pub mesh_opened: Option<std::time::Instant>,
+  /// Sub-panel toggled by "Configure" on the "Sync Windows wallpaper" row.
+  pub wallpaper_sync_open: bool,
   pub order_drag: Option<(OrderList, usize)>,
   /// `translationEnabled` de `config.json`, lu au lancement.
   pub translation: bool,
   pub themes: Vec<crate::theme::file::ThemeEntry>,
+}
+
+/// Configuration updates for Windows wallpaper synchronization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WallpaperSyncMessage {
+  OutputMode(OutputMode),
+  BlurRefWidth(u32),
+  ColorMixRatio(u8),
+  Brightness(u8),
+  GlowSizePercent(u32),
+  Dither(u8),
+  GradientHeight(u32),
+  TransitionEnabled(bool),
+  TransitionDuration(u8),
+  TransitionFps(u32),
+  TransitionEasing(TransitionEasing),
+  TransitionAnchor(TransitionAnchor),
+  SkipWhenObscured(bool),
+  PrefetchEnabled(bool),
+  PrefetchEager(bool),
+  CacheEnabled(bool),
+  ForceFillStyle(bool),
+  RestoreOnStop(bool),
+  Reset,
 }
 
 /// Messages de la page.
@@ -1094,6 +1128,9 @@ pub enum SettingsMessage {
   AccentToggle,
   /// Bouton « Configure » de « Mesh gradient brightness ».
   MeshToggle,
+  /// Bouton « Configure » de « Sync Windows wallpaper ».
+  WallpaperSyncTogglePanel,
+  WallpaperSync(WallpaperSyncMessage),
   OrderPress(OrderList, usize),
   OrderEnter(OrderList, usize),
   OrderRelease,
@@ -1176,6 +1213,7 @@ impl App {
       BoolKey::DiscordPaused => settings.discord_paused,
       BoolKey::DiscordAlbum => settings.discord_album,
       BoolKey::UpdateCheck => settings.update_check,
+      BoolKey::WallpaperSync => settings.wallpaper_sync.enabled,
     }
   }
 
@@ -1251,6 +1289,7 @@ impl App {
       BoolKey::DiscordPaused => settings.discord_paused = value,
       BoolKey::DiscordAlbum => settings.discord_album = value,
       BoolKey::UpdateCheck => settings.update_check = value,
+      BoolKey::WallpaperSync => settings.wallpaper_sync.enabled = value,
       BoolKey::CompactEngine => settings.compact_engine_btns = value,
       BoolKey::HideEngine => settings.hide_engine_btns = value,
       BoolKey::PlayBtnBg => settings.play_btn_bg = value,
@@ -1505,6 +1544,39 @@ impl App {
         });
         Vec::new()
       }
+      SettingsMessage::WallpaperSyncTogglePanel => {
+        self.ui.prefs.wallpaper_sync_open = !self.ui.prefs.wallpaper_sync_open;
+        Vec::new()
+      }
+      SettingsMessage::WallpaperSync(msg) => {
+        let ws = &mut self.settings.wallpaper_sync;
+        match msg {
+          WallpaperSyncMessage::OutputMode(mode) => ws.output_mode = mode,
+          WallpaperSyncMessage::BlurRefWidth(px) => ws.blur_ref_width = px.max(1),
+          WallpaperSyncMessage::ColorMixRatio(pct) => ws.color_mix_ratio = pct.min(100),
+          WallpaperSyncMessage::Brightness(pct) => {
+            ws.brightness = f32::from(pct.clamp(20, 100)) / 100.0;
+          }
+          WallpaperSyncMessage::GlowSizePercent(pct) => ws.glow_size_percent = pct.clamp(40, 100),
+          WallpaperSyncMessage::Dither(tenths) => ws.dither = f32::from(tenths.min(20)) / 10.0,
+          WallpaperSyncMessage::GradientHeight(px) => ws.gradient_height = px,
+          WallpaperSyncMessage::TransitionEnabled(v) => ws.transition_enabled = v,
+          WallpaperSyncMessage::TransitionDuration(tenths) => {
+            ws.transition_duration = f32::from(tenths.clamp(5, 50)) / 10.0;
+          }
+          WallpaperSyncMessage::TransitionFps(fps) => ws.transition_fps = fps.clamp(1, 240),
+          WallpaperSyncMessage::TransitionEasing(easing) => ws.transition_easing = easing,
+          WallpaperSyncMessage::TransitionAnchor(anchor) => ws.transition_anchor = anchor,
+          WallpaperSyncMessage::SkipWhenObscured(v) => ws.skip_when_obscured = v,
+          WallpaperSyncMessage::PrefetchEnabled(v) => ws.prefetch_enabled = v,
+          WallpaperSyncMessage::PrefetchEager(v) => ws.prefetch_eager = v,
+          WallpaperSyncMessage::CacheEnabled(v) => ws.cache_enabled = v,
+          WallpaperSyncMessage::ForceFillStyle(v) => ws.force_fill_style = v,
+          WallpaperSyncMessage::RestoreOnStop(v) => ws.restore_on_stop = v,
+          WallpaperSyncMessage::Reset => ws.reset_options(),
+        }
+        self.save_settings()
+      }
       SettingsMessage::OrderPress(list, index) => {
         self.ui.prefs.order_drag = Some((list, index));
         Vec::new()
@@ -1658,7 +1730,7 @@ mod tests {
       .any(|effect| matches!(effect, Effect::SaveSettings(_)))
   }
 
-  const ALL_BOOLS: [BoolKey; 31] = [
+  const ALL_BOOLS: [BoolKey; 32] = [
     BoolKey::TrayOnClose,
     BoolKey::MediaSession,
     BoolKey::DiscordRpc,
@@ -1666,6 +1738,7 @@ mod tests {
     BoolKey::DiscordPaused,
     BoolKey::DiscordAlbum,
     BoolKey::UpdateCheck,
+    BoolKey::WallpaperSync,
     BoolKey::SmoothPresets,
     BoolKey::PersistSound,
     BoolKey::CompactEngine,
@@ -1883,6 +1956,50 @@ mod tests {
       in_category(Category::Advanced).all(|entry| entry.label != "Background mesh gradient"),
       "plus sous Advanced"
     );
+  }
+
+  #[test]
+  fn sync_windows_wallpaper_sits_right_below_theme_mode() {
+    let labels: Vec<&str> = in_category(Category::Theme)
+      .map(|entry| entry.label)
+      .collect();
+    let mode_idx = labels.iter().position(|l| *l == "Theme mode").unwrap();
+    assert_eq!(labels[mode_idx + 1], "Sync Windows wallpaper");
+  }
+
+  #[test]
+  fn wallpaper_sync_panel_toggles_and_options_update_and_reset() {
+    let mut app = app();
+    assert!(!app.ui.prefs.wallpaper_sync_open);
+    send(&mut app, SettingsMessage::WallpaperSyncTogglePanel);
+    assert!(app.ui.prefs.wallpaper_sync_open);
+    send(&mut app, SettingsMessage::WallpaperSyncTogglePanel);
+    assert!(!app.ui.prefs.wallpaper_sync_open);
+
+    send(
+      &mut app,
+      SettingsMessage::SetBool(BoolKey::WallpaperSync, true),
+    );
+    let effects = send(
+      &mut app,
+      SettingsMessage::WallpaperSync(WallpaperSyncMessage::OutputMode(OutputMode::Primary)),
+    );
+    assert!(saved(&effects));
+    assert_eq!(app.settings.wallpaper_sync.output_mode, OutputMode::Primary);
+
+    send(
+      &mut app,
+      SettingsMessage::WallpaperSync(WallpaperSyncMessage::Brightness(80)),
+    );
+    assert!((app.settings.wallpaper_sync.brightness - 0.8).abs() < 1e-6);
+
+    send(
+      &mut app,
+      SettingsMessage::WallpaperSync(WallpaperSyncMessage::Reset),
+    );
+    assert!(app.settings.wallpaper_sync.enabled);
+    assert_eq!(app.settings.wallpaper_sync.output_mode, OutputMode::Span);
+    assert!((app.settings.wallpaper_sync.brightness - 0.6).abs() < 1e-6);
   }
 
   #[test]

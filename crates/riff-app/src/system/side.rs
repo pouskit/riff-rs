@@ -2,16 +2,18 @@
 
 use super::host::{Host, HostInit, HostRequest, Report, TrayLabels};
 use super::now_playing::SyncGate;
+use super::wallpaper::{WallpaperController, WallpaperTrack};
 use super::{Command, Dedup, platform, startup};
 use super::{autostart, bridge};
 use crate::app::{App, Message};
+use crate::backend::Backend;
 use crate::images::Decoded;
 use crate::settings::{DiscordStatus, DiscordTime};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// Écart, en millisecondes, entre la position réelle et la position attendue à partir duquel l'activité est
 /// renvoyée : saut de lecture, attente du flux. Moins que cela : retard de la position entre deux `Event::Position`
@@ -72,6 +74,8 @@ struct Cover {
 
 pub struct SystemSide {
   host: Option<Host>,
+  wallpaper_allowed: bool,
+  wallpaper: WallpaperController,
   gate: SyncGate,
   dedup: Dedup,
   started: Instant,
@@ -111,6 +115,8 @@ impl SystemSide {
       });
     }
     Self {
+      wallpaper_allowed: host.is_some(),
+      wallpaper: WallpaperController::new(),
       host,
       gate: SyncGate::default(),
       dedup: Dedup::default(),
@@ -130,6 +136,8 @@ impl SystemSide {
   pub fn inactive() -> Self {
     Self {
       host: None,
+      wallpaper_allowed: false,
+      wallpaper: WallpaperController::new(),
       gate: SyncGate::default(),
       dedup: Dedup::default(),
       started: Instant::now(),
@@ -338,6 +346,77 @@ impl SystemSide {
     if let Some(host) = &self.host {
       host.send(request);
     }
+  }
+
+  /// Pushes current playback state and configuration to the Windows wallpaper sync worker.
+  pub fn sync_wallpaper(&mut self, app: &App, backend: &Arc<Backend>) {
+    if !self.wallpaper_allowed {
+      return;
+    }
+    if !app.settings.wallpaper_sync.enabled {
+      self.wallpaper.disable();
+      return;
+    }
+    let current = app.player.current.as_ref().and_then(|track| {
+      let cover_url = track.thumb_url().filter(|u| !u.is_empty())?;
+      let duration = app.playback.duration.or_else(|| {
+        track
+          .duration
+          .filter(|d| *d > 0.0 && d.is_finite())
+          .map(Duration::from_secs_f64)
+      });
+      let remaining_secs = duration.map(|d| d.saturating_sub(app.playback.position).as_secs_f64());
+      Some(WallpaperTrack {
+        id: track.id.clone().unwrap_or_else(|| cover_url.clone()),
+        title: track.title.clone().unwrap_or_default(),
+        artist: track.artist.clone().unwrap_or_default(),
+        cover_url,
+        remaining_secs,
+        paused: !app.playback.is_playing,
+      })
+    });
+
+    let next = if !app.player.shuffle && !app.player.repeat {
+      app.player.index.and_then(|idx| {
+        app
+          .player
+          .queue
+          .iter()
+          .skip(idx + 1)
+          .find(|track| !app.data.is_blocked(track))
+          .and_then(|track| {
+            let cover_url = track.thumb_url().filter(|u| !u.is_empty())?;
+            Some(WallpaperTrack {
+              id: track.id.clone().unwrap_or_else(|| cover_url.clone()),
+              title: track.title.clone().unwrap_or_default(),
+              artist: track.artist.clone().unwrap_or_default(),
+              cover_url,
+              remaining_secs: None,
+              paused: false,
+            })
+          })
+      })
+    } else {
+      None
+    };
+
+    self
+      .wallpaper
+      .sync(&app.settings.wallpaper_sync, current, next, backend);
+  }
+
+  pub fn request_stop_wallpaper(&mut self) {
+    self.wallpaper.request_stop();
+  }
+
+  pub fn stop_wallpaper(&mut self) {
+    self.wallpaper.stop();
+  }
+}
+
+impl Drop for SystemSide {
+  fn drop(&mut self) {
+    self.wallpaper.stop();
   }
 }
 

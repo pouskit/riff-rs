@@ -9,9 +9,11 @@ use crate::languages::LANGUAGES;
 use crate::manage::{ImportKind, ManageMessage};
 use crate::motion::ControlKey;
 use crate::prefs::{
-  self, Category, Control, Entry, IntKey, OrderList, Panel, SettingsMessage, TextKey,
+  self, BoolKey, Category, Control, Entry, IntKey, OrderList, Panel, SettingsMessage, TextKey,
+  WallpaperSyncMessage,
 };
 use crate::prefs_visual::{self, MediaTarget, VisualChoice, VisualInt, VisualMessage};
+use crate::system::wallpaper::{OutputMode, TransitionAnchor, TransitionEasing};
 use crate::theme::tokens::settings as metrics;
 use crate::theme::{fonts, icons, tokens};
 use crate::widgets::button::{icon, text_button};
@@ -1111,6 +1113,357 @@ fn mesh_preview(app: &App) -> Element<'_, Message> {
   container(card).center_x(Fill).into()
 }
 
+fn wallpaper_sync_row<'a>(app: &'a App, p: Palette, entry: &'static Entry) -> Element<'a, Message> {
+  let on = app.bool_pref(BoolKey::WallpaperSync);
+  let top = row![
+    label_column(app, p, entry),
+    row![
+      pill_button(
+        p,
+        app.i18n.t("Configure"),
+        send(SettingsMessage::WallpaperSyncTogglePanel),
+      ),
+      switch(
+        p,
+        on,
+        send(SettingsMessage::SetBool(BoolKey::WallpaperSync, !on))
+      )
+    ]
+    .spacing(metrics::BUTTON_GAP)
+    .align_y(Vertical::Center),
+  ]
+  .spacing(metrics::ROW_TOP_GAP)
+  .align_y(Vertical::Center);
+  if app.ui.prefs.wallpaper_sync_open {
+    column![top, wallpaper_sync_panel(app, p)]
+      .spacing(metrics::ROW_GAP)
+      .into()
+  } else {
+    top.into()
+  }
+}
+
+fn wallpaper_sync_panel<'a>(app: &'a App, p: Palette) -> Element<'a, Message> {
+  let ws = &app.settings.wallpaper_sync;
+  let ws_msg = |msg: WallpaperSyncMessage| send(SettingsMessage::WallpaperSync(msg));
+  let toggle_row = |label: &str, on: bool, msg: WallpaperSyncMessage| -> Element<'a, Message> {
+    row![
+      text(app.i18n.t(label)).size(13).width(Fill),
+      switch(p, on, ws_msg(msg))
+    ]
+    .spacing(16)
+    .align_y(Vertical::Center)
+    .width(Fill)
+    .into()
+  };
+  let dropdown_row = |label: &str,
+                      options: Vec<Option_>,
+                      current: String,
+                      on_select: Box<dyn Fn(String) -> Message + 'a>|
+   -> Element<'a, Message> {
+    row![
+      text(app.i18n.t(label)).size(13).width(Fill),
+      container(dropdown(p, options, &current, on_select)).width(CONTROL_WIDTH)
+    ]
+    .spacing(16)
+    .align_y(Vertical::Center)
+    .width(Fill)
+    .into()
+  };
+  let slider_row = |label: &str,
+                    range: (i32, i32),
+                    step: i32,
+                    value: i32,
+                    shown: String,
+                    on_change: Box<dyn Fn(i32) -> Message + 'a>|
+   -> Element<'a, Message> {
+    column![
+      row![
+        text(app.i18n.t(label)).size(13).width(Fill),
+        text(shown)
+          .size(13)
+          .font(fonts::MEDIUM)
+          .color(p.roles.on_surface),
+      ]
+      .spacing(16)
+      .align_y(Vertical::Center)
+      .width(Fill),
+      m3_slider(p, range, step, value, on_change),
+    ]
+    .spacing(4)
+    .width(Fill)
+    .into()
+  };
+
+  let monitor_options = vec![
+    Option_ {
+      value: "primary".into(),
+      label: app.i18n.t("Primary monitor only"),
+    },
+    Option_ {
+      value: "span".into(),
+      label: app.i18n.t("One render per monitor (span)"),
+    },
+  ];
+  let blur_options = [544u32, 800, 1200, 1600, 1920, 2560]
+    .into_iter()
+    .map(|px| Option_ {
+      value: px.to_string(),
+      label: format!("{px} px"),
+    })
+    .collect();
+  let dither_options = [
+    (0u8, "Off"),
+    (4, "0.4"),
+    (8, "0.8"),
+    (12, "1.2"),
+    (16, "1.6"),
+  ]
+  .into_iter()
+  .map(|(val, label)| Option_ {
+    value: val.to_string(),
+    label: if val == 0 {
+      app.i18n.t(label)
+    } else {
+      label.to_string()
+    },
+  })
+  .collect();
+  let gradient_options = vec![
+    Option_ {
+      value: "0".into(),
+      label: app.i18n.t("Full resolution"),
+    },
+    Option_ {
+      value: "90".into(),
+      label: "90 px".into(),
+    },
+    Option_ {
+      value: "180".into(),
+      label: "180 px".into(),
+    },
+    Option_ {
+      value: "360".into(),
+      label: "360 px".into(),
+    },
+  ];
+
+  let brightness_pct = (ws.brightness * 100.0).round() as i32;
+  let dither_tenths = (ws.dither * 10.0).round() as u8;
+  let duration_tenths = (ws.transition_duration * 10.0).round() as u8;
+
+  let mut items: Vec<Element<'a, Message>> = vec![
+    row![
+      text(app.i18n.t("Monitors")).size(13).width(Fill),
+      segmented(
+        p,
+        monitor_options,
+        ws.output_mode.as_str(),
+        move |v| ws_msg(WallpaperSyncMessage::OutputMode(OutputMode::parse(&v))),
+        false,
+      )
+    ]
+    .spacing(16)
+    .align_y(Vertical::Center)
+    .width(Fill)
+    .into(),
+    dropdown_row(
+      "Blur reference width",
+      blur_options,
+      ws.blur_ref_width.to_string(),
+      Box::new(move |v| ws_msg(WallpaperSyncMessage::BlurRefWidth(v.parse().unwrap_or(544)))),
+    ),
+    slider_row(
+      "Album colour mix",
+      (0, 100),
+      10,
+      i32::from(ws.color_mix_ratio),
+      format!("{}%", ws.color_mix_ratio),
+      Box::new(move |v| ws_msg(WallpaperSyncMessage::ColorMixRatio(v.clamp(0, 100) as u8))),
+    ),
+    slider_row(
+      "Brightness",
+      (20, 100),
+      10,
+      brightness_pct,
+      format!("{brightness_pct}%"),
+      Box::new(move |v| ws_msg(WallpaperSyncMessage::Brightness(v.clamp(20, 100) as u8))),
+    ),
+    slider_row(
+      "Glow size",
+      (40, 100),
+      15,
+      ws.glow_size_percent as i32,
+      format!("{}%", ws.glow_size_percent),
+      Box::new(move |v| {
+        ws_msg(WallpaperSyncMessage::GlowSizePercent(
+          v.clamp(40, 100) as u32
+        ))
+      }),
+    ),
+    dropdown_row(
+      "Dithering",
+      dither_options,
+      dither_tenths.to_string(),
+      Box::new(move |v| ws_msg(WallpaperSyncMessage::Dither(v.parse().unwrap_or(8)))),
+    ),
+    dropdown_row(
+      "Gradient resolution",
+      gradient_options,
+      ws.gradient_height.to_string(),
+      Box::new(move |v| {
+        ws_msg(WallpaperSyncMessage::GradientHeight(
+          v.parse().unwrap_or(180),
+        ))
+      }),
+    ),
+    toggle_row(
+      "Crossfade",
+      ws.transition_enabled,
+      WallpaperSyncMessage::TransitionEnabled(!ws.transition_enabled),
+    ),
+  ];
+
+  if ws.transition_enabled {
+    let duration_options = [
+      (5u8, "0.5 s"),
+      (10, "1 s"),
+      (15, "1.5 s"),
+      (20, "2 s"),
+      (30, "3 s"),
+    ]
+    .into_iter()
+    .map(|(v, label)| Option_ {
+      value: v.to_string(),
+      label: label.to_string(),
+    })
+    .collect();
+    let fps_options = [30u32, 60, 120]
+      .into_iter()
+      .map(|fps| Option_ {
+        value: fps.to_string(),
+        label: fps.to_string(),
+      })
+      .collect();
+    let easing_options = vec![
+      Option_ {
+        value: "smoothstep".into(),
+        label: app.i18n.t("Smooth"),
+      },
+      Option_ {
+        value: "linear".into(),
+        label: app.i18n.t("Linear"),
+      },
+    ];
+    let anchor_options = vec![
+      Option_ {
+        value: "center".into(),
+        label: app.i18n.t("Centred on the change"),
+      },
+      Option_ {
+        value: "end".into(),
+        label: app.i18n.t("Ends on the change"),
+      },
+      Option_ {
+        value: "start".into(),
+        label: app.i18n.t("Starts on the change"),
+      },
+    ];
+
+    items.extend([
+      dropdown_row(
+        "Duration",
+        duration_options,
+        duration_tenths.to_string(),
+        Box::new(move |v| {
+          ws_msg(WallpaperSyncMessage::TransitionDuration(
+            v.parse().unwrap_or(15),
+          ))
+        }),
+      ),
+      row![
+        text(app.i18n.t("Frame rate")).size(13).width(Fill),
+        segmented(
+          p,
+          fps_options,
+          &ws.transition_fps.to_string(),
+          move |v| ws_msg(WallpaperSyncMessage::TransitionFps(v.parse().unwrap_or(60))),
+          false,
+        )
+      ]
+      .spacing(16)
+      .align_y(Vertical::Center)
+      .width(Fill)
+      .into(),
+      row![
+        text(app.i18n.t("Easing")).size(13).width(Fill),
+        segmented(
+          p,
+          easing_options,
+          ws.transition_easing.as_str(),
+          move |v| ws_msg(WallpaperSyncMessage::TransitionEasing(
+            TransitionEasing::parse(&v),
+          )),
+          false,
+        )
+      ]
+      .spacing(16)
+      .align_y(Vertical::Center)
+      .width(Fill)
+      .into(),
+      dropdown_row(
+        "Alignment",
+        anchor_options,
+        ws.transition_anchor.as_str().to_string(),
+        Box::new(move |v| {
+          ws_msg(WallpaperSyncMessage::TransitionAnchor(
+            TransitionAnchor::parse(&v),
+          ))
+        }),
+      ),
+      toggle_row(
+        "Skip when the desktop is hidden",
+        ws.skip_when_obscured,
+        WallpaperSyncMessage::SkipWhenObscured(!ws.skip_when_obscured),
+      ),
+    ]);
+  }
+
+  items.extend([
+    toggle_row(
+      "Pre-render the next song",
+      ws.prefetch_enabled,
+      WallpaperSyncMessage::PrefetchEnabled(!ws.prefetch_enabled),
+    ),
+    toggle_row(
+      "Pre-render as soon as the next song is known",
+      ws.prefetch_eager,
+      WallpaperSyncMessage::PrefetchEager(!ws.prefetch_eager),
+    ),
+    toggle_row(
+      "Cache renders on disk",
+      ws.cache_enabled,
+      WallpaperSyncMessage::CacheEnabled(!ws.cache_enabled),
+    ),
+    toggle_row(
+      "Force the Windows wallpaper style",
+      ws.force_fill_style,
+      WallpaperSyncMessage::ForceFillStyle(!ws.force_fill_style),
+    ),
+    toggle_row(
+      "Restore the previous wallpaper when disabled",
+      ws.restore_on_stop,
+      WallpaperSyncMessage::RestoreOnStop(!ws.restore_on_stop),
+    ),
+    text_button(
+      app.i18n.t("Reset"),
+      Some(ws_msg(WallpaperSyncMessage::Reset)),
+    ),
+  ]);
+
+  Column::with_children(items).spacing(8).width(Fill).into()
+}
+
 /// `#mesh-customizer-modal` : les deux points glissés dans l'aperçu de Riff deviennent quatre curseurs.
 fn mesh_panel(app: &App) -> Element<'_, Message> {
   const SLIDERS: [(&str, VisualInt); 5] = [
@@ -1213,6 +1566,7 @@ fn entry_body<'a>(app: &'a App, p: Palette, entry: &'static Entry) -> Element<'a
       .into()
   };
   match entry.control {
+    Control::Toggle(BoolKey::WallpaperSync) => wallpaper_sync_row(app, p, entry),
     Control::Toggle(key) => {
       let on = app.bool_pref(key);
       switch_body(app, p, entry, on, send(SettingsMessage::SetBool(key, !on)))
@@ -1438,7 +1792,8 @@ pub(super) fn row_radius(index: usize, count: usize) -> border::Radius {
 
 /// `.setting-item.is-disabled` : « Intensity » et « Brightness » en mode de thème automatique (`app.js:1819-1827`).
 fn is_disabled(label: &str, theme_mode: &str) -> bool {
-  theme_mode == "auto" && matches!(label, "Intensity" | "Brightness")
+  (theme_mode == "auto" && matches!(label, "Intensity" | "Brightness"))
+    || (!cfg!(windows) && label == "Sync Windows wallpaper")
 }
 
 fn entry_view<'a>(

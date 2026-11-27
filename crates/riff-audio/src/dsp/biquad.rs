@@ -85,6 +85,22 @@ impl BiquadCoeffs {
     )
   }
 
+  pub fn low_pass(fs: f64, f0: f64, q: f64) -> Self {
+    let freq = normalized(fs, f0);
+    if freq >= 1.0 {
+      return Self::IDENTITY;
+    }
+    if freq <= 0.0 {
+      return Self::gain(0.0);
+    }
+    let w0 = PI * freq;
+    let cos_w0 = w0.cos();
+    let alpha = w0.sin() / (2.0 * q.max(1e-6));
+    let b1 = 1.0 - cos_w0;
+    let b0 = b1 * 0.5;
+    Self::normalize(b0, b1, b0, 1.0 + alpha, -2.0 * cos_w0, 1.0 - alpha)
+  }
+
   const fn gain(g: f64) -> Self {
     Self {
       b0: g,
@@ -314,5 +330,19 @@ mod tests {
     filter.process(&mut l, &mut r);
     assert!(r.iter().all(|v| *v == 0.0));
     assert!(l[1] != 1.0);
+  }
+
+  #[test]
+  fn low_pass_matches_butterworth_response() {
+    let q = std::f64::consts::FRAC_1_SQRT_2;
+    for fs in RATES {
+      let c = BiquadCoeffs::low_pass(fs, 1000.0, q);
+      let dc = c.magnitude_db(fs, 1.0);
+      let cutoff = c.magnitude_db(fs, 1000.0);
+      let high = c.magnitude_db(fs, 8000.0);
+      assert!(dc.abs() < 0.05, "fs={fs} dc={dc}");
+      assert!((cutoff + 3.0103).abs() < 0.05, "fs={fs} cutoff={cutoff}");
+      assert!(high < -20.0, "fs={fs} high={high}");
+    }
   }
 }

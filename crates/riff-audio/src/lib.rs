@@ -27,8 +27,9 @@ pub struct AudioSettings {
   pub pitch: f32,
   pub reverb: f32,
   pub distortion: f32,
-  pub volume: f32,
   pub echo: f32,
+  pub muffled: f32,
+  pub volume: f32,
   pub eq: EqGains,
 }
 
@@ -40,8 +41,9 @@ impl Default for AudioSettings {
       pitch: 0.0,
       reverb: 0.0,
       distortion: 0.0,
-      volume: 1.0,
       echo: 0.0,
+      muffled: 0.0,
+      volume: 1.0,
       eq: EqGains::default(),
     }
   }

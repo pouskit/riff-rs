@@ -213,6 +213,8 @@ pub struct NativeSettings {
   pub perf_mode: bool,
   /// Bouton « Vérifier les mises à jour » dans « à propos ». Aucune requête automatique, quel que soit ce réglage.
   pub update_check: bool,
+  /// Synchronisation du fond d'écran Windows avec la pochette du titre en cours.
+  pub wallpaper_sync: crate::system::wallpaper::WallpaperSyncConfig,
   /// Fenêtre audio.
   pub sound: SoundPrefs,
   /// Paroles, visualiseurs et fonds.
@@ -285,6 +287,7 @@ impl Default for NativeSettings {
       update_check: true,
       reduce_motion: None,
       perf_mode: false,
+      wallpaper_sync: crate::system::wallpaper::WallpaperSyncConfig::default(),
       sound: SoundPrefs::default(),
       visual: Box::default(),
       legacy: Map::new(),
@@ -409,6 +412,7 @@ impl NativeSettings {
         .text("riff_adv_reduce_motion")
         .map(|value| value == "true"),
       perf_mode: storage.text("riff_perf_mode") == Some("1"),
+      wallpaper_sync: defaults.wallpaper_sync,
       sound: SoundPrefs::imported_from(storage),
       visual: Box::new(VisualSettings::imported_from(storage)),
       legacy: Map::new(),

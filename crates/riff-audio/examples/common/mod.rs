@@ -57,6 +57,7 @@ impl EffectOptions {
       "--reverb" => settings.reverb = number(flag, args.next())?,
       "--echo" => settings.echo = number(flag, args.next())?,
       "--distortion" => settings.distortion = number(flag, args.next())?,
+      "--muffled" => settings.muffled = number(flag, args.next())?,
       "--speed" => settings.speed = number(flag, args.next())?,
       "--speed-pitch" => settings.speed_pitch = number(flag, args.next())?,
       "--pitch" => settings.pitch = number(flag, args.next())?,

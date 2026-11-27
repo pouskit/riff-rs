@@ -43,6 +43,7 @@ pub struct Sound {
   pub distortion: f32,
   pub volume: f32,
   pub echo: f32,
+  pub muffled: f32,
   pub eq: Eq3,
   pub eq_bands: [f32; 10],
 }
@@ -57,6 +58,7 @@ impl Default for Sound {
       distortion: 0.0,
       volume: 1.0,
       echo: 0.0,
+      muffled: 0.0,
       eq: Eq3::default(),
       eq_bands: [0.0; 10],
     }
@@ -82,6 +84,7 @@ impl Sound {
     self.reverb = bounded(self.reverb, EFFECT_RANGE, 0.0);
     self.distortion = bounded(self.distortion, EFFECT_RANGE, 0.0);
     self.echo = bounded(self.echo, EFFECT_RANGE, 0.0);
+    self.muffled = bounded(self.muffled, EFFECT_RANGE, 0.0);
     self.eq.low = bounded(self.eq.low, EQ_RANGE, 0.0);
     self.eq.mid = bounded(self.eq.mid, EQ_RANGE, 0.0);
     self.eq.high = bounded(self.eq.high, EQ_RANGE, 0.0);
@@ -100,6 +103,7 @@ impl Sound {
       distortion: self.distortion,
       volume: self.volume,
       echo: self.echo,
+      muffled: self.muffled,
       eq: EqGains {
         low: self.eq.low,
         mid: self.eq.mid,
@@ -149,6 +153,7 @@ impl Sound {
         .and_then(Value::as_f64)
         .map_or_else(|| number("gain", 1.0), |n| n as f32),
       echo: number("echo", 0.0),
+      muffled: number("muffled", 0.0),
       eq: Eq3 {
         low: band("low"),
         mid: band("mid"),
@@ -177,6 +182,7 @@ impl Sound {
       distortion: mix(self.distortion, to.distortion),
       volume: mix(self.volume, to.volume),
       echo: mix(self.echo, to.echo),
+      muffled: mix(self.muffled, to.muffled),
       eq: Eq3 {
         low: mix(self.eq.low, to.eq.low),
         mid: mix(self.eq.mid, to.eq.mid),
@@ -314,6 +320,16 @@ pub fn default_presets() -> Vec<Preset> {
       Sound {
         distortion: 75.0,
         volume: 1.25,
+        ..base
+      },
+    ),
+    preset(
+      "p_bathroom",
+      "Party bathroom",
+      Sound {
+        muffled: 85.0,
+        reverb: 18.0,
+        volume: 1.15,
         ..base
       },
     ),
@@ -486,6 +502,7 @@ pub enum SoundField {
   Reverb,
   Distortion,
   Echo,
+  Muffled,
   Low,
   Mid,
   High,
@@ -503,7 +520,9 @@ impl SoundField {
       Self::Speed | Self::SpeedPitch => (SPEED_RANGE.0, SPEED_RANGE.1, 0.05),
       Self::Pitch => (PITCH_RANGE.0, PITCH_RANGE.1, 1.0),
       Self::Volume => (VOLUME_RANGE.0, VOLUME_RANGE.1, 0.01),
-      Self::Reverb | Self::Distortion | Self::Echo => (EFFECT_RANGE.0, EFFECT_RANGE.1, 1.0),
+      Self::Reverb | Self::Distortion | Self::Echo | Self::Muffled => {
+        (EFFECT_RANGE.0, EFFECT_RANGE.1, 1.0)
+      }
       Self::Low | Self::Mid | Self::High | Self::Band(_) => (EQ_RANGE.0, EQ_RANGE.1, 1.0),
       Self::HqVocal | Self::HqAir | Self::HqBass => (HQ_RANGE.0, HQ_RANGE.1, 1.0),
     }
@@ -596,6 +615,7 @@ impl App {
       SoundField::Reverb => live.reverb,
       SoundField::Distortion => live.distortion,
       SoundField::Echo => live.echo,
+      SoundField::Muffled => live.muffled,
       SoundField::Low => live.eq.low,
       SoundField::Mid => live.eq.mid,
       SoundField::High => live.eq.high,
@@ -722,6 +742,7 @@ impl App {
       SoundField::Reverb => live.reverb = value,
       SoundField::Distortion => live.distortion = value,
       SoundField::Echo => live.echo = value,
+      SoundField::Muffled => live.muffled = value,
       SoundField::Low => live.eq.low = value,
       SoundField::Mid => live.eq.mid = value,
       SoundField::High => live.eq.high = value,
@@ -1127,7 +1148,8 @@ mod tests {
         "Speed up",
         "Slowed + reverb",
         "Nightcore",
-        "Distortion"
+        "Distortion",
+        "Party bathroom"
       ]
     );
     assert_eq!(presets[0].settings, Sound::default());
@@ -1140,6 +1162,9 @@ mod tests {
     assert_close(presets[4].settings.reverb, 20.0);
     assert_close(presets[5].settings.distortion, 75.0);
     assert_close(presets[5].settings.volume, 1.25);
+    assert_close(presets[6].settings.muffled, 85.0);
+    assert_close(presets[6].settings.reverb, 18.0);
+    assert_close(presets[6].settings.volume, 1.15);
   }
 
   #[test]
@@ -1195,6 +1220,7 @@ mod tests {
       distortion: 10.0,
       volume: 0.9,
       echo: 5.0,
+      muffled: 70.0,
       eq: Eq3 {
         low: 1.0,
         mid: 2.0,
@@ -1215,6 +1241,7 @@ mod tests {
     assert_close(engine.distortion, 10.0);
     assert_close(engine.volume, 0.9);
     assert_close(engine.echo, 5.0);
+    assert_close(engine.muffled, 70.0);
     assert_close(engine.eq.low, 1.0);
     assert_close(engine.eq.mid, 2.0);
     assert_close(engine.eq.high, 3.0);
@@ -1247,6 +1274,22 @@ mod tests {
     assert_close(app.ui.audio.live.distortion, 75.0);
     assert_close(app.ui.audio.live.volume, 1.25);
     assert_close(app.settings.sound.audio.distortion, 75.0);
+  }
+
+  #[test]
+  fn applying_party_bathroom_preset_tweens_muffled_and_reverb() {
+    let mut app = app();
+    send(
+      &mut app,
+      AudioMessage::ApplyPreset("p_bathroom".to_string()),
+    );
+    while app.ui.audio.tween.is_some() {
+      send(&mut app, AudioMessage::TweenTick);
+    }
+    assert_close(app.ui.audio.live.muffled, 85.0);
+    assert_close(app.ui.audio.live.reverb, 18.0);
+    assert_close(app.ui.audio.live.volume, 1.15);
+    assert_eq!(app.settings.sound.active_preset, "p_bathroom");
   }
 
   #[test]
@@ -1286,6 +1329,7 @@ mod tests {
       SoundField::Reverb,
       SoundField::Distortion,
       SoundField::Echo,
+      SoundField::Muffled,
       SoundField::Low,
       SoundField::Mid,
       SoundField::High,

@@ -100,7 +100,9 @@ fn shown(field: SoundField, value: f32) -> String {
     SoundField::Speed | SoundField::SpeedPitch => format!("{value:.2}x"),
     SoundField::Pitch => format!("{} st", signed(value)),
     SoundField::Volume => percent(value * 100.0),
-    SoundField::Reverb | SoundField::Distortion | SoundField::Echo => percent(value),
+    SoundField::Reverb | SoundField::Distortion | SoundField::Echo | SoundField::Muffled => {
+      percent(value)
+    }
     SoundField::Low | SoundField::Mid | SoundField::High | SoundField::Band(_) => {
       format!("{} dB", signed(value))
     }
@@ -715,6 +717,7 @@ fn effects(roles: Roles, app: &App) -> Element<'static, Message> {
       slider_item(roles, app, "Reverb", SoundField::Reverb),
       slider_item(roles, app, "Distortion", SoundField::Distortion),
       slider_item(roles, app, "Echo", SoundField::Echo),
+      slider_item(roles, app, "Muffled", SoundField::Muffled),
     ],
     t::PANEL_GAP,
   )
@@ -1329,6 +1332,7 @@ mod tests {
     assert_eq!(shown(SoundField::Volume, 1.25), "125%");
     assert_eq!(shown(SoundField::Reverb, 0.0), "0%");
     assert_eq!(shown(SoundField::Echo, 15.0), "15%");
+    assert_eq!(shown(SoundField::Muffled, 85.0), "85%");
     assert_eq!(shown(SoundField::Low, 0.0), "0 dB");
     assert_eq!(shown(SoundField::High, 4.0), "+4 dB");
     assert_eq!(shown(SoundField::Band(2), -6.0), "-6 dB");

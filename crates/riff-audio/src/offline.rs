@@ -51,6 +51,7 @@ pub fn render(
         reverb: 0.0,
         echo: 0.0,
         distortion: 0.0,
+        muffled: 0.0,
         ..*settings
       });
     }
@@ -269,9 +270,22 @@ mod tests {
       reverb: 100.0,
       echo: 100.0,
       distortion: 100.0,
+      muffled: 100.0,
       ..AudioSettings::default()
     };
     assert_eq!(render(&input, 2, RATE, &with_effects, Some(&hq)), plain);
+  }
+
+  #[test]
+  fn muffled_changes_signal_in_offline_render() {
+    let input = stereo_sine(4000.0, 0.25, 9600);
+    let settings = AudioSettings {
+      muffled: 85.0,
+      ..AudioSettings::default()
+    };
+    let out = render(&input, 2, RATE, &settings, None);
+    let tail_peak = out[9600..].iter().fold(0f32, |m, v| m.max(v.abs()));
+    assert!(tail_peak < 0.03, "offline muffled tail_peak={tail_peak}");
   }
 
   #[test]
